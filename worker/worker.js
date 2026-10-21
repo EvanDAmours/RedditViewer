@@ -1,12 +1,41 @@
 // Quiet Reddit relay — a tiny Cloudflare Worker that forwards requests to Reddit
-// and adds the CORS headers browsers need. Deploy it free at workers.cloudflare.com,
-// then paste its URL into ⚙ settings → CORS proxy in the app.
+// and adds the CORS headers browsers need.
+//
+// Reddit refuses anonymous requests from cloud IPs, so the relay authenticates with
+// Reddit's official API using an app you register at https://www.reddit.com/prefs/apps
+// Set these worker secrets (wrangler secret put NAME):
+//   REDDIT_CLIENT_ID      the string under the app name
+//   REDDIT_CLIENT_SECRET  the "secret" (omit for "installed app" type apps)
 
 // Optional: restrict who may use this relay. Leave empty to allow any origin.
-const ALLOWED_ORIGINS = []; // e.g. ['https://evandamours.github.io']
+const ALLOWED_ORIGINS = ['https://evandamours.github.io'];
+const UA = 'web:quiet-reddit-relay:1.0 (personal reader)';
+
+let tokenCache = { value: null, expires: 0 };
+
+async function appToken(env) {
+  if (tokenCache.value && Date.now() < tokenCache.expires - 60000) return tokenCache.value;
+  if (!env.REDDIT_CLIENT_ID) return null;
+  const body = new URLSearchParams(env.REDDIT_CLIENT_SECRET
+    ? { grant_type: 'client_credentials' }
+    : { grant_type: 'https://oauth.reddit.com/grants/installed_client', device_id: 'DO_NOT_TRACK_THIS_DEVICE' });
+  const res = await fetch('https://www.reddit.com/api/v1/access_token', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Basic ' + btoa(env.REDDIT_CLIENT_ID + ':' + (env.REDDIT_CLIENT_SECRET || '')),
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': UA,
+    },
+    body,
+  });
+  if (!res.ok) throw new Error('token request failed: HTTP ' + res.status + ' ' + (await res.text()).slice(0, 200));
+  const j = await res.json();
+  tokenCache = { value: j.access_token, expires: Date.now() + (j.expires_in || 3600) * 1000 };
+  return tokenCache.value;
+}
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const origin = request.headers.get('Origin') || '';
     const cors = {
       'Access-Control-Allow-Origin': ALLOWED_ORIGINS.length ? (ALLOWED_ORIGINS.includes(origin) ? origin : 'null') : '*',
@@ -14,26 +43,31 @@ export default {
       'Access-Control-Allow-Headers': '*',
       'Access-Control-Max-Age': '86400',
     };
+    const reply = (body, status, type = 'text/plain') => new Response(body, { status, headers: { ...cors, 'Content-Type': type } });
     if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
-    if (request.method !== 'GET') return new Response('GET only', { status: 405, headers: cors });
-    if (ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(origin)) return new Response('forbidden', { status: 403, headers: cors });
+    if (request.method !== 'GET') return reply('GET only', 405);
+    if (ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(origin)) return reply('forbidden', 403);
 
     const u = new URL(request.url);
-    // Accept either ?url=<full reddit url> or a reddit path mirrored on this worker (/r/pics/hot.json?...)
     let target;
     const raw = u.searchParams.get('url');
     if (raw) {
-      try { target = new URL(raw); } catch { return new Response('bad url', { status: 400, headers: cors }); }
+      try { target = new URL(raw); } catch { return reply('bad url', 400); }
     } else {
       target = new URL('https://www.reddit.com' + u.pathname + u.search);
     }
-    if (!/(^|\.)reddit\.com$/.test(target.hostname)) return new Response('only reddit.com is relayed', { status: 400, headers: cors });
-    if (!/\.json$/.test(target.pathname) && !target.pathname.startsWith('/api/morechildren')) return new Response('only JSON endpoints are relayed', { status: 400, headers: cors });
+    if (!/(^|\.)reddit\.com$/.test(target.hostname)) return reply('only reddit.com is relayed', 400);
+    if (!/\.json$/.test(target.pathname) && !target.pathname.startsWith('/api/morechildren')) return reply('only JSON endpoints are relayed', 400);
 
-    const upstream = await fetch(target.toString(), {
-      headers: { 'User-Agent': 'web:quiet-reddit-relay:1.0 (personal reader)', 'Accept': 'application/json' },
-      cf: { cacheTtl: 60, cacheEverything: true },
-    });
+    const headers = { 'User-Agent': UA, 'Accept': 'application/json' };
+    let token;
+    try { token = await appToken(env); } catch (e) { return reply(JSON.stringify({ error: e.message }), 502, 'application/json'); }
+    if (token) {
+      target.hostname = 'oauth.reddit.com';
+      headers['Authorization'] = 'Bearer ' + token;
+    }
+
+    const upstream = await fetch(target.toString(), { headers, cf: { cacheTtl: 60, cacheEverything: true } });
     const body = await upstream.arrayBuffer();
     return new Response(body, {
       status: upstream.status,

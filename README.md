@@ -26,29 +26,24 @@ locally. Everything is saved in your browser's local storage.
 
 The repo is plain static files, so any other static host works too.
 
-## Reddit blocks direct browser requests (read this)
+## How it reaches Reddit
 
-Reddit no longer allows plain browser pages to read its JSON from another
-site, so the app needs a small relay that you own. It takes about five
-minutes and is free:
+Reddit refuses anonymous requests from browsers on other sites and from cloud
+servers, so the app talks to Reddit through a small relay: a Cloudflare Worker
+(`worker/worker.js`) that authenticates with Reddit's official API using a
+registered Reddit app, and adds the CORS headers browsers need. The deployed
+relay URL is the app's default; you can point it at your own in ⚙ settings.
 
-1. Create an account at <https://workers.cloudflare.com> (free plan is plenty).
-2. In the Cloudflare dashboard choose **Workers & Pages → Create → Create Worker**,
-   give it a name like `quiet-reddit-relay`, and click **Deploy**.
-3. Click **Edit code**, delete the sample code, paste in the contents of
-   [`worker/worker.js`](worker/worker.js) from this repo, and click **Deploy**.
-4. Copy the worker URL, e.g. `https://quiet-reddit-relay.yourname.workers.dev`.
-5. Open the app, press ⚙, paste that URL into **Relay / CORS proxy URL**, close
-   the dialog. Done; the setting is remembered in your browser.
+To run your own relay:
 
-Optional: to stop other people using your relay, set `ALLOWED_ORIGINS` at the
-top of `worker.js` to `['https://<your-user>.github.io']`.
-
-If you prefer the command line: `cd worker && npx wrangler deploy`.
-
-Any other CORS proxy also works. A URL ending in `?url=` is treated as a
-prefix for the encoded Reddit URL; anything else is treated as a host that
-mirrors Reddit's paths.
+1. Register an app at <https://www.reddit.com/prefs/apps> (type **script**,
+   any name, redirect URI `http://localhost`). Note the client id (under the
+   app name) and the secret.
+2. Create a free Cloudflare account, then in `worker/`:
+   `npx wrangler login`, `npx wrangler secret put REDDIT_CLIENT_ID`,
+   `npx wrangler secret put REDDIT_CLIENT_SECRET`, `npx wrangler deploy`.
+3. Edit `ALLOWED_ORIGINS` in `worker.js` to your site's origin, and paste the
+   worker URL into ⚙ settings (or into `DEFAULTS.proxy` in `app.js`).
 
 ## Development
 

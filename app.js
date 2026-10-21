@@ -7,7 +7,7 @@
   const DEFAULTS = {
     theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
     thumbs: false, nsfw: false, stickied: false,
-    home: 'popular', mute: '', proxy: '', favs: []
+    home: 'popular', mute: '', proxy: 'https://quiet-reddit-relay.damoursevan.workers.dev', favs: []
   };
   const settings = Object.assign({}, DEFAULTS, load('qr-settings'));
   function load(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } }
