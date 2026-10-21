@@ -34,20 +34,39 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   // ---------- fetching ----------
-  async function reddit(path, params = {}) {
-    const url = new URL('https://www.reddit.com' + path + '.json');
-    url.searchParams.set('raw_json', '1');
-    for (const [k, v] of Object.entries(params)) if (v != null && v !== '') url.searchParams.set(k, v);
-    let target = url.toString();
-    if (settings.proxy) target = settings.proxy + encodeURIComponent(target);
-    let res;
-    try { res = await fetch(target, { credentials: 'omit' }); }
-    catch (e) { throw new Error('Network/CORS error reaching Reddit. If this persists, Reddit may be blocking direct browser requests; set a CORS proxy in ⚙ settings.'); }
-    if (res.status === 429) throw new Error('Reddit is rate-limiting you (429). Wait a minute and try again.');
-    if (res.status === 403) throw new Error('Reddit refused the request (403). This subreddit may be private, quarantined, or Reddit is blocking this network.');
-    if (res.status === 404) throw new Error('Not found (404). Check the subreddit name.');
-    if (!res.ok) throw new Error('Reddit returned HTTP ' + res.status);
-    return res.json();
+  // Reddit no longer reliably sends CORS headers for unauthenticated browser requests,
+  // so we try a few direct hosts and then a user-supplied relay (see worker/).
+  function viaProxy(url) {
+    const p = settings.proxy.trim();
+    if (!p) return null;
+    if (/[=?]$/.test(p)) return p + encodeURIComponent(url);           // https://relay/?url=
+    const base = p.replace(/\/+$/, '');
+    return base + url.replace(/^https?:\/\/[^/]+/, '');                // https://relay  (path mirrored)
+  }
+  const SETUP_HINT = ' Reddit blocks direct browser requests on most networks now; set up the free relay described in the README and paste its URL into ⚙ settings.';
+  async function redditRaw(pathAndQuery) {
+    const direct = ['https://www.reddit.com', 'https://api.reddit.com', 'https://old.reddit.com'].map(hst => hst + pathAndQuery);
+    const prox = viaProxy(direct[0]);
+    const attempts = prox ? [prox, ...direct] : direct;
+    let lastErr;
+    for (const target of attempts) {
+      let res;
+      try { res = await fetch(target, { credentials: 'omit' }); }
+      catch (e) { lastErr = new Error('Could not reach Reddit (network/CORS).' + (prox ? '' : SETUP_HINT)); continue; }
+      if (res.ok) {
+        try { return await res.json(); } catch { lastErr = new Error('Reddit returned something that was not JSON.'); continue; }
+      }
+      if (res.status === 429) lastErr = new Error('Reddit is rate-limiting requests (429). Wait a minute and try again.');
+      else if (res.status === 403) lastErr = new Error('Reddit refused the request (403): private/quarantined subreddit, or Reddit is blocking this network.' + (prox ? '' : SETUP_HINT));
+      else if (res.status === 404) { throw new Error('Not found (404). Check the subreddit name.'); }
+      else lastErr = new Error('Reddit returned HTTP ' + res.status);
+    }
+    throw lastErr;
+  }
+  function reddit(path, params = {}) {
+    const q = new URLSearchParams({ raw_json: '1' });
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, v);
+    return redditRaw(path + '.json?' + q);
   }
 
   // ---------- post filtering / sanitizing ----------
@@ -228,11 +247,8 @@
         b.textContent = 'loading…'; b.disabled = true;
         try {
           const ids = c.data.children.slice(0, 100);
-          const url = new URL('https://www.reddit.com/api/morechildren.json');
-          url.searchParams.set('raw_json', '1'); url.searchParams.set('api_type', 'json');
-          url.searchParams.set('link_id', 't3_' + op.id); url.searchParams.set('children', ids.join(','));
-          const target = settings.proxy ? settings.proxy + encodeURIComponent(url) : url;
-          const j = await (await fetch(target, { credentials: 'omit' })).json();
+          const q = new URLSearchParams({ raw_json: '1', api_type: 'json', link_id: 't3_' + op.id, children: ids.join(',') });
+          const j = await redditRaw('/api/morechildren.json?' + q);
           const things = j.json?.data?.things || [];
           // morechildren returns a flat list with parent_id; rebuild the tree
           const byId = new Map(things.map(t => [t.data.name, Object.assign(t, { data: Object.assign({}, t.data, { replies: { data: { children: [] } } }) })]));

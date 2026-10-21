@@ -26,13 +26,29 @@ locally. Everything is saved in your browser's local storage.
 
 The repo is plain static files, so any other static host works too.
 
-## If Reddit blocks requests
+## Reddit blocks direct browser requests (read this)
 
-Reddit sometimes refuses or rate-limits unauthenticated JSON requests
-(HTTP 403/429), especially from data-center or VPN IPs. From a normal home or
-mobile connection it usually works. If it doesn't, you can point the app at a
-CORS proxy you control via ⚙ settings: the proxy prefix is prepended to the
-URL-encoded Reddit URL, e.g. `https://my-proxy.example/?url=`.
+Reddit no longer allows plain browser pages to read its JSON from another
+site, so the app needs a small relay that you own. It takes about five
+minutes and is free:
+
+1. Create an account at <https://workers.cloudflare.com> (free plan is plenty).
+2. In the Cloudflare dashboard choose **Workers & Pages → Create → Create Worker**,
+   give it a name like `quiet-reddit-relay`, and click **Deploy**.
+3. Click **Edit code**, delete the sample code, paste in the contents of
+   [`worker/worker.js`](worker/worker.js) from this repo, and click **Deploy**.
+4. Copy the worker URL, e.g. `https://quiet-reddit-relay.yourname.workers.dev`.
+5. Open the app, press ⚙, paste that URL into **Relay / CORS proxy URL**, close
+   the dialog. Done; the setting is remembered in your browser.
+
+Optional: to stop other people using your relay, set `ALLOWED_ORIGINS` at the
+top of `worker.js` to `['https://<your-user>.github.io']`.
+
+If you prefer the command line: `cd worker && npx wrangler deploy`.
+
+Any other CORS proxy also works. A URL ending in `?url=` is treated as a
+prefix for the encoded Reddit URL; anything else is treated as a host that
+mirrors Reddit's paths.
 
 ## Development
 
