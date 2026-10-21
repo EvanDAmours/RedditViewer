@@ -44,11 +44,27 @@
     return base + url.replace(/^https?:\/\/[^/]+/, '');                // https://relay  (path mirrored)
   }
   const SETUP_HINT = ' Reddit blocks direct browser requests on most networks now; set up the free relay described in the README and paste its URL into ⚙ settings.';
+  // JSONP: a <script> tag is not subject to CORS, so this works from a home connection
+  // even when fetch() is refused. Reddit may or may not still honour it.
+  let jsonpSeq = 0;
+  function jsonp(url, timeout = 12000) {
+    return new Promise((resolve, reject) => {
+      const cb = '__qr_cb' + (++jsonpSeq);
+      const sc = document.createElement('script');
+      const done = (fn, v) => { delete window[cb]; sc.remove(); clearTimeout(timer); fn(v); };
+      const timer = setTimeout(() => done(reject, new Error('jsonp timeout')), timeout);
+      window[cb] = data => done(resolve, data);
+      sc.onerror = () => done(reject, new Error('jsonp failed'));
+      sc.src = url + '&jsonp=' + cb;
+      document.head.append(sc);
+    });
+  }
   async function redditRaw(pathAndQuery) {
     const direct = ['https://www.reddit.com', 'https://api.reddit.com', 'https://old.reddit.com'].map(hst => hst + pathAndQuery);
     const prox = viaProxy(direct[0]);
-    const attempts = prox ? [prox, ...direct] : direct;
+    const attempts = prox ? [direct[0], prox, ...direct.slice(1)] : direct;
     let lastErr;
+    try { return await jsonp(direct[0]); } catch (e) { lastErr = e; }
     for (const target of attempts) {
       let res;
       try { res = await fetch(target, { credentials: 'omit' }); }
