@@ -39,6 +39,7 @@
       <button data-sec="fav">★</button>
     </nav>
     <input id="search" type="search" placeholder="search…" spellcheck="false">
+    <span class="badge relayBadge" hidden></span>
     <button id="settingsBtn" title="settings">⚙</button>
   </header>
 
@@ -52,6 +53,7 @@
   <div class="pbar">
     <button id="pClose">← back</button>
     <div class="ptitle"><b id="pName"></b><span id="pSub"></span></div>
+    <span class="badge relayBadge" hidden></span>
     <button id="pFav" title="favourite">☆</button>
     <button id="pExt" title="open in another player">⤓ .m3u</button>
   </div>
@@ -69,6 +71,9 @@
       <select id="optFormat"><option value="auto">auto (HLS, then TS)</option><option value="m3u8">HLS (.m3u8)</option><option value="ts">MPEG-TS (.ts)</option></select></label>
     <label>Relay URL <input id="optRelay" placeholder="https://relay.example/KEY/?url={url}" spellcheck="false"></label>
     <label><input type="checkbox" id="optRelayStreams"> Send video through the relay too</label>
+    <p class="hint">Requests sent to the relay from this browser: <b id="relayToday">0</b> today (UTC day), <b id="relaySession">0</b> this session.
+      An HLS stream is one request per video piece every few seconds; an MPEG-TS stream is one request for the whole sitting.
+      Other devices aren't included; the Cloudflare dashboard has the full total. <button type="button" id="relayReset" class="link">reset</button></p>
     <p class="hint">Signed in as <span id="who"></span>. <button type="button" id="signOut" class="link">Sign out</button></p>
     <menu><button value="close">close</button></menu>
   </form>

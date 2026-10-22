@@ -87,6 +87,51 @@
     return settings.relayStreams && viaRelay(u) ? viaRelay(u) : u;
   }
 
+  // ---------- relay usage counter ----------
+  // Counts requests this browser sends to the relay, per UTC day (Cloudflare's daily reset).
+  // Uses the browser's resource-timing record, so hls.js and API calls are all seen.
+  const relayOrigin = () => { try { const p = (settings.relay || '').trim(); return p ? new URL(p.replace('{url}', '')).origin : ''; } catch { return ''; } };
+  const stats = Object.assign({ day: '', total: 0 }, store.get('relayStats', {}));
+  let sessionCount = 0;
+  const precounted = new Map(); // url -> how many starts were counted before their resource entry arrives
+  const todayUTC = () => new Date().toISOString().slice(0, 10);
+  function bump(n) {
+    if (stats.day !== todayUTC()) { stats.day = todayUTC(); stats.total = 0; }
+    stats.total += n; sessionCount += n; store.set('relayStats', stats); renderStats();
+  }
+  function renderStats() {
+    if (stats.day !== todayUTC()) { stats.day = todayUTC(); stats.total = 0; store.set('relayStats', stats); }
+    const on = !!relayOrigin();
+    document.querySelectorAll('.relayBadge').forEach(el => {
+      el.hidden = !on;
+      el.textContent = `relay: ${stats.total.toLocaleString()} today`;
+      el.title = `${sessionCount.toLocaleString()} this session. Counted in this browser only; the Cloudflare dashboard has the total across all devices.`;
+    });
+    const t = $('#relayToday'); if (t) t.textContent = stats.total.toLocaleString();
+    const c = $('#relaySession'); if (c) c.textContent = sessionCount.toLocaleString();
+  }
+  function precount(url) { // for long-lived streams (MPEG-TS): count when they start, not when they end
+    const o = relayOrigin(); if (!o || !url.startsWith(o + '/')) return;
+    precounted.set(url, (precounted.get(url) || 0) + 1); bump(1);
+  }
+  if (window.PerformanceObserver) {
+    try {
+      performance.setResourceTimingBufferSize?.(2000);
+      performance.addEventListener?.('resourcetimingbufferfull', () => performance.clearResourceTimings());
+      new PerformanceObserver(list => {
+        const o = relayOrigin(); if (!o) return;
+        let n = 0;
+        for (const e of list.getEntries()) {
+          if (!e.name.startsWith(o + '/')) continue;
+          const pre = precounted.get(e.name) || 0;
+          if (pre > 0) { pre === 1 ? precounted.delete(e.name) : precounted.set(e.name, pre - 1); continue; }
+          n++;
+        }
+        if (n) bump(n);
+      }).observe({ type: 'resource', buffered: false });
+    } catch {}
+  }
+
   // ---------- sign in ----------
   async function signIn(servers, username, password) {
     let lastErr = 'No server answered.';
@@ -237,6 +282,7 @@
     if (isHls && window.Hls && Hls.isSupported()) {
       // Safari plays HLS natively (HEVC and Dolby audio included); prefer that when available.
       if (v.canPlayType('application/vnd.apple.mpegurl') && /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg/.test(navigator.userAgent)) {
+        precount(url); // Safari's own player isn't visible to the counter; count the start
         v.src = url; v.play().catch(() => {});
         v.onerror = () => fail(url, v.error ? `media error ${v.error.code}` : 'cannot play');
         return;
@@ -261,6 +307,7 @@
         setTimeout(() => fail(url, d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '')), 0);
       });
     } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+      precount(url);
       tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: !!live, liveBufferLatencyMaxLatency: 6, liveBufferLatencyMinRemain: 1.5, autoCleanupSourceBuffer: true });
       tsPlayer.attachMediaElement(v); tsPlayer.load(); tsPlayer.play().catch(() => {});
       tsPlayer.on(window.mpegts.Events.ERROR, (t, d, info) => setTimeout(() => fail(url, `${t}: ${d}${info?.code ? ` (HTTP ${info.code})` : ''}`), 0));
@@ -399,13 +446,17 @@
   $('#settingsBtn').addEventListener('click', () => {
     $('#optLogos').checked = settings.logos; $('#optFormat').value = settings.format;
     $('#optRelay').value = settings.relay; $('#optRelayStreams').checked = settings.relayStreams;
+    renderStats();
     dlg.showModal();
   });
   dlg.addEventListener('close', () => {
     settings.logos = $('#optLogos').checked; settings.format = $('#optFormat').value;
     settings.relay = $('#optRelay').value.trim(); settings.relayStreams = $('#optRelayStreams').checked;
-    saveSettings(); if (!$('#main').hidden) renderList();
+    saveSettings(); renderStats(); if (!$('#main').hidden) renderList();
   });
+  $('#relayReset').addEventListener('click', () => { stats.total = 0; sessionCount = 0; store.set('relayStats', stats); renderStats(); });
+
+  renderStats();
 
   // ---------- boot ----------
   if (acct?.base) {
