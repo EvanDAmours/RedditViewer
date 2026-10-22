@@ -18,6 +18,8 @@ input,select,textarea{background:var(--card);border:1px solid var(--line);border
 .login label{display:block;margin:12px 0;font-weight:600;font-size:14px}
 .login label input,.login label textarea{margin-top:6px;font-weight:400}
 .login details{margin:12px 0;color:var(--muted)}
+.login .offline{margin:14px 0 0;line-height:1.5}
+.login .offline code{background:var(--chip);padding:1px 4px;border-radius:4px}
 
 .bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 14px;background:var(--bg);border-bottom:1px solid var(--line)}
 .tabs{display:flex;gap:4px}.tabs button{border-radius:999px;padding:5px 14px}.tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}

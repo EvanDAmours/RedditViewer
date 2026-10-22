@@ -73,8 +73,17 @@
     cache.set(key, data);
     return data;
   }
-  function streamUrl(kind, id, ext) {
-    const u = `${acct.base}/${kind}/${encodeURIComponent(acct.username)}/${encodeURIComponent(acct.password)}/${id}.${ext}`;
+  // Every base URL a stream could come from: the signed-in server first, then the other addresses.
+  function streamBases() {
+    const list = [acct.base];
+    for (const srv of acct.servers || []) {
+      const o = normalizeServer(srv); if (!o) continue;
+      for (const c of candidates(o)) if (!list.includes(c)) list.push(c);
+    }
+    return list.filter(b => !(b.startsWith('http:') && location.protocol === 'https:' && !settings.relayStreams));
+  }
+  function streamUrl(kind, id, ext, base = acct.base) {
+    const u = `${base}/${kind}/${encodeURIComponent(acct.username)}/${encodeURIComponent(acct.password)}/${id}.${ext}`;
     return settings.relayStreams && viaRelay(u) ? viaRelay(u) : u;
   }
 
@@ -204,11 +213,11 @@
   }
 
   // ---------- player ----------
-  let hls = null, mpegts = null;
+  let hls = null, tsPlayer = null;
   function stopPlayback() {
     const v = $('#video');
     if (hls) { hls.destroy(); hls = null; }
-    if (mpegts) { mpegts.pause(); mpegts.unload(); mpegts.detachMediaElement(); mpegts.destroy(); mpegts = null; }
+    if (tsPlayer) { try { tsPlayer.pause(); tsPlayer.unload(); tsPlayer.detachMediaElement(); tsPlayer.destroy(); } catch {} tsPlayer = null; }
     v.pause(); v.removeAttribute('src'); v.load();
   }
   function showMsg(text, err) {
@@ -216,11 +225,11 @@
     m.replaceChildren(h('div', null, text, err ? h('div', { class: 'err' }, err) : null));
   }
   let watchdog = null;
-  function playUrl(url, { live } = {}) {
-    stopPlayback(); showMsg('connecting…');
+  function playUrl(url, { live, keepMsg } = {}) {
+    stopPlayback(); if (!keepMsg) showMsg('connecting…');
     const v = $('#video');
     clearTimeout(watchdog);
-    watchdog = setTimeout(() => { if (!$('#pMsg').hidden && $('#pMsg').textContent.startsWith('connecting')) fail(url, 'no data after 20 seconds'); }, 20000);
+    watchdog = setTimeout(() => { if (!$('#pMsg').hidden && /^(connecting|trying)/.test($('#pMsg').textContent)) fail(url, 'no data after 20 seconds'); }, 20000);
     v.onplaying = () => { clearTimeout(watchdog); showMsg(''); };
     const isHls = /\.m3u8(\?|$)/i.test(url), isTs = /\.ts(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
@@ -228,12 +237,14 @@
       hls.loadSource(url); hls.attachMedia(v);
       hls.on(Hls.Events.ERROR, (_, d) => {
         const code = d.response?.code;
-        if (d.fatal || (code && code >= 400)) { fail(url, d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '')); }
+        console.warn('hls', d.type, d.details, code || '', d.fatal ? 'fatal' : '');
+        // Defer: destroying hls.js from inside its own event handler breaks it.
+        if (d.fatal || (code && code >= 400)) setTimeout(() => fail(url, d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '')), 0);
       });
-    } else if (isTs && window.mpegts && mpegts.isSupported?.()) {
-      mpegts = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false });
-      mpegts.attachMediaElement(v); mpegts.load(); mpegts.play().catch(() => {});
-      mpegts.on(window.mpegts.Events.ERROR, (t, d, info) => fail(url, `${t}: ${d}${info?.code ? ` (HTTP ${info.code})` : ''}`));
+    } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+      tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false });
+      tsPlayer.attachMediaElement(v); tsPlayer.load(); tsPlayer.play().catch(() => {});
+      tsPlayer.on(window.mpegts.Events.ERROR, (t, d, info) => setTimeout(() => fail(url, `${t}: ${d}${info?.code ? ` (HTTP ${info.code})` : ''}`), 0));
     } else {
       v.src = url; v.play().catch(() => {});
       v.onerror = () => fail(url, v.error ? `media error ${v.error.code}` : 'cannot play');
@@ -241,21 +252,40 @@
   }
   let current = null;
   function fail(url, why) {
+    if (!current || url !== current.url) return; // stale error from a player we already replaced
     clearTimeout(watchdog);
-    if (hls) { hls.destroy(); hls = null; }
-    // Live: fall back from HLS to TS (or the reverse) once before giving up.
-    if (current?.sec === 'live' && settings.format === 'auto' && !current.triedAlt) {
-      current.triedAlt = true; current.firstWhy = why;
-      const alt = /\.m3u8/.test(url) ? url.replace(/\.m3u8(\?|$)/, '.ts$1') : url.replace(/\.ts(\?|$)/, '.m3u8$1');
-      return playUrl(alt, { live: true });
+    stopPlayback();
+    const codecProblem = /bufferAddCodecError|bufferIncompatibleCodecs|bufferAppendError|media error 4|media error 3/.test(why);
+    // Try the same stream on the next server address, then the other format, before giving up
+    // (but not for codec errors: a different server sends the same video).
+    if (current?.sec === 'live' && !codecProblem) {
+      current.firstWhy = current.firstWhy || why;
+      const bases = streamBases();
+      current.baseIdx = (current.baseIdx ?? 0) + 1;
+      if (current.baseIdx < bases.length) {
+        current.url = streamUrl('live', current.id, current.fmt, bases[current.baseIdx]);
+        showMsg(`trying ${bases[current.baseIdx].replace(/^https?:\/\//, '')}…`);
+        return playUrl(current.url, { live: true, keepMsg: true });
+      }
+      if (settings.format === 'auto' && !current.triedAlt) {
+        current.triedAlt = true; current.baseIdx = 0;
+        current.fmt = current.fmt === 'm3u8' ? 'ts' : 'm3u8';
+        current.url = streamUrl('live', current.id, current.fmt, bases[0]);
+        return playUrl(current.url, { live: true });
+      }
     }
-    if (current?.firstWhy) why = `${current.firstWhy}; then ${why}`;
-    const hint = /HTTP 5(11|03)|HTTP 4(01|03)/.test(why)
+    if (current?.firstWhy && current.firstWhy !== why) why = `${current.firstWhy}; then ${why}`;
+    const offline = location.protocol === 'https:'
+      ? ' Many services send video from plain http:// addresses, which this https page is not allowed to load: download the offline copy from the sign-in page and open that instead.'
+      : '';
+    const hint = codecProblem
+      ? 'The stream arrived but this browser cannot decode its video or audio format. 4K and some HD channels use HEVC/H.265 or AC3 audio, which Chrome and Firefox do not support. Try an HD or SD version of the channel, Safari or Edge, or use "⤓ .m3u" to open it in VLC.'
+      : /HTTP 5(11|03)|HTTP 4(01|03)/.test(why)
       ? 'The service refused the stream. Usually: too many connections for this account, or it blocks this network/browser.'
       : /networkError|Failed to fetch|network/i.test(why) && !settings.relayStreams
         ? 'The stream could not be loaded. If sign-in works but video does not, the service is blocking browser requests for video: set a relay URL and enable "Send video through the relay" in settings.'
         : 'Playback failed. Use "⤓ .m3u" to open it in VLC or another player.';
-    showMsg(hint, why);
+    showMsg(hint + offline, why);
   }
 
   async function open(sec, item) {
@@ -268,7 +298,8 @@
     $('#pFav').onclick = () => { toggleFav(sec, { ...item, [SEC[sec].id]: id }); $('#pFav').classList.toggle('on', isFav(sec, id)); };
     if (sec === 'live') {
       const fmt = settings.format === 'auto' ? (acct.info?.user_info?.allowed_output_formats?.includes('m3u8') ? 'm3u8' : 'ts') : settings.format;
-      current.url = streamUrl('live', id, fmt);
+      current.id = id; current.fmt = fmt; current.baseIdx = 0;
+      current.url = streamUrl('live', id, fmt, streamBases()[0]);
       playUrl(current.url, { live: true });
       loadEpg(id);
     } else if (sec === 'vod') {
