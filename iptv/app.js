@@ -246,14 +246,14 @@
           h('span', { class: 'name' }, x.name),
           x.tv_archive ? h('span', { class: 'meta' }, 'catch-up') : null,
           isFav(s, x[SEC[s]?.id] ?? x.id) ? h('span', { class: 'star' }, '★') : null);
-      }), capNote);
+      }), ...(capNote ? [capNote] : []));
     } else {
       listEl.replaceChildren(h('div', { class: 'grid' }, ...list.map(x => {
         const img = safeImg(x.stream_icon || x.cover);
         return h('div', { class: 'card', onclick: () => open(sec, x) },
           settings.logos && img ? h('img', { class: 'poster', src: img, loading: 'lazy', alt: '', onerror: e => { e.target.replaceWith(h('div', { class: 'poster' }, x.name)); } }) : h('div', { class: 'poster' }, x.name),
           h('div', { class: 'cap' }, x.name, h('small', null, [x.year, x.rating ? `★ ${x.rating}` : null].filter(Boolean).join(' · '))));
-      })), capNote);
+      })), ...(capNote ? [capNote] : []));
     }
   }
 
