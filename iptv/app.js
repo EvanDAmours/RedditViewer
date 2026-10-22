@@ -109,7 +109,12 @@
     });
     const t = $('#relayToday'); if (t) t.textContent = stats.total.toLocaleString();
     const c = $('#relaySession'); if (c) c.textContent = sessionCount.toLocaleString();
+    document.querySelectorAll('.relayToggleWrap').forEach(w => { w.hidden = !on; w.querySelector('input').checked = !!settings.relayStreams; });
   }
+  document.querySelectorAll('.relayToggle').forEach(cb => cb.addEventListener('change', () => {
+    settings.relayStreams = cb.checked; saveSettings(); renderStats();
+    if (current?.sec === 'live' && !$('#player').hidden) { current.log = []; current.triedAlt = false; startLive(current.base, preferredFmt()); }
+  }));
   function precount(url) { // for long-lived streams (MPEG-TS): count when they start, not when they end
     const o = relayOrigin(); if (!o || !url.startsWith(o + '/')) return;
     precounted.set(url, (precounted.get(url) || 0) + 1); bump(1);
@@ -162,7 +167,7 @@
     e.preventDefault();
     const err = $('#loginErr'); err.hidden = true;
     const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'signing in…';
-    settings.relay = $('#inRelay').value.trim(); saveSettings();
+    settings.relay = $('#inRelay').value.trim(); settings.relayStreams = $('#inRelayStreams').checked; saveSettings(); renderStats();
     try {
       await signIn($('#inServers').value.split(/\n|,/), $('#inUser').value.trim(), $('#inPass').value);
       showMain();
@@ -461,8 +466,9 @@
   // ---------- boot ----------
   if (acct?.base) {
     $('#main').hidden = false;
-    api('').then(info => { acct.info = info; showMain(); }).catch(() => { $('#main').hidden = true; $('#login').hidden = false; $('#inServers').value = (acct.servers || []).join('\n'); $('#inUser').value = acct.username; });
+    api('').then(info => { acct.info = info; showMain(); }).catch(() => { $('#main').hidden = true; $('#login').hidden = false; $('#inServers').value = (acct.servers || []).join('\n'); $('#inUser').value = acct.username; prefillRelay(); });
   } else {
-    $('#login').hidden = false; $('#inRelay').value = settings.relay;
+    $('#login').hidden = false; prefillRelay();
   }
+  function prefillRelay() { $('#inRelay').value = settings.relay; $('#inRelayStreams').checked = !!settings.relayStreams; }
 })();

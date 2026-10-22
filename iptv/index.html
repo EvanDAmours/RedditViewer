@@ -19,10 +19,12 @@
       <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
     <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
     <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
-    <details><summary>Advanced</summary>
-      <label>Relay URL <span class="hint">only if the service refuses browser requests</span>
+    <fieldset class="relaybox">
+      <legend>Relay <span class="hint">optional; leave blank to talk to the service directly</span></legend>
+      <label>Relay URL
         <input id="inRelay" placeholder="https://relay.example/KEY/?url={url}" spellcheck="false"></label>
-    </details>
+      <label class="check"><input type="checkbox" id="inRelayStreams"> Send video through the relay too</label>
+    </fieldset>
     <p id="loginErr" class="err" hidden></p>
     <button type="submit" class="primary">Sign in</button>
     <p class="hint offline">Video won't play from this page? Many services stream from plain <code>http://</code> addresses, which a web page on https can't load.
@@ -40,6 +42,7 @@
     </nav>
     <input id="search" type="search" placeholder="search…" spellcheck="false">
     <span class="badge relayBadge" hidden></span>
+    <label class="hdrToggle relayToggleWrap" hidden><input type="checkbox" class="relayToggle"> video via relay</label>
     <button id="settingsBtn" title="settings">⚙</button>
   </header>
 
@@ -54,6 +57,7 @@
     <button id="pClose">← back</button>
     <div class="ptitle"><b id="pName"></b><span id="pSub"></span></div>
     <span class="badge relayBadge" hidden></span>
+    <label class="hdrToggle relayToggleWrap" hidden><input type="checkbox" class="relayToggle"> video via relay</label>
     <button id="pFav" title="favourite">☆</button>
     <button id="pExt" title="open in another player">⤓ .m3u</button>
   </div>

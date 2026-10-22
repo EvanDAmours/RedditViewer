@@ -27,7 +27,11 @@ input[type=checkbox],input[type=radio]{width:auto;margin:0 6px 0 0;vertical-alig
 .login h1{margin:0 0 4px;font-size:24px}.login .sub{margin:0 0 16px;color:var(--muted)}
 .login label{display:block;margin:12px 0;font-weight:600;font-size:14px}
 .login label input,.login label textarea{margin-top:6px;font-weight:400}
-.login details{margin:12px 0;color:var(--muted)}
+.login .relaybox{margin:14px 0 0;padding:4px 12px 10px;border:1px solid var(--line);border-radius:10px}
+.login .relaybox legend{font-weight:600;font-size:14px;padding:0 4px}
+.login .relaybox label{margin:8px 0}
+.login .check{font-weight:400}
+.hdrToggle{font-size:12.5px;color:var(--muted);display:flex;align-items:center;gap:2px;white-space:nowrap;cursor:pointer}
 .login .offline{margin:14px 0 0;line-height:1.5}
 .login .offline code{background:var(--chip);padding:1px 4px;border-radius:4px}
 
@@ -85,6 +89,7 @@ dialog label select,dialog label input[type=text],dialog label input:not([type])
 dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
 
 @media (max-width:760px){
+  .bar,.pbar{flex-wrap:wrap}
   .layout{grid-template-columns:1fr}
   .cats{position:static;max-height:none;border-right:none;border-bottom:1px solid var(--line);display:flex;gap:4px;overflow-x:auto;padding:8px 10px}
   .cats button{width:auto;flex:none;background:var(--chip)}.cats button.on{background:var(--accent);color:#fff}
@@ -105,10 +110,12 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
       <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
     <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
     <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
-    <details><summary>Advanced</summary>
-      <label>Relay URL <span class="hint">only if the service refuses browser requests</span>
+    <fieldset class="relaybox">
+      <legend>Relay <span class="hint">optional; leave blank to talk to the service directly</span></legend>
+      <label>Relay URL
         <input id="inRelay" placeholder="https://relay.example/KEY/?url={url}" spellcheck="false"></label>
-    </details>
+      <label class="check"><input type="checkbox" id="inRelayStreams"> Send video through the relay too</label>
+    </fieldset>
     <p id="loginErr" class="err" hidden></p>
     <button type="submit" class="primary">Sign in</button>
       </form>
@@ -124,6 +131,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     </nav>
     <input id="search" type="search" placeholder="search…" spellcheck="false">
     <span class="badge relayBadge" hidden></span>
+    <label class="hdrToggle relayToggleWrap" hidden><input type="checkbox" class="relayToggle"> video via relay</label>
     <button id="settingsBtn" title="settings">⚙</button>
   </header>
 
@@ -138,6 +146,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     <button id="pClose">← back</button>
     <div class="ptitle"><b id="pName"></b><span id="pSub"></span></div>
     <span class="badge relayBadge" hidden></span>
+    <label class="hdrToggle relayToggleWrap" hidden><input type="checkbox" class="relayToggle"> video via relay</label>
     <button id="pFav" title="favourite">☆</button>
     <button id="pExt" title="open in another player">⤓ .m3u</button>
   </div>
@@ -277,7 +286,12 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     });
     const t = $('#relayToday'); if (t) t.textContent = stats.total.toLocaleString();
     const c = $('#relaySession'); if (c) c.textContent = sessionCount.toLocaleString();
+    document.querySelectorAll('.relayToggleWrap').forEach(w => { w.hidden = !on; w.querySelector('input').checked = !!settings.relayStreams; });
   }
+  document.querySelectorAll('.relayToggle').forEach(cb => cb.addEventListener('change', () => {
+    settings.relayStreams = cb.checked; saveSettings(); renderStats();
+    if (current?.sec === 'live' && !$('#player').hidden) { current.log = []; current.triedAlt = false; startLive(current.base, preferredFmt()); }
+  }));
   function precount(url) { // for long-lived streams (MPEG-TS): count when they start, not when they end
     const o = relayOrigin(); if (!o || !url.startsWith(o + '/')) return;
     precounted.set(url, (precounted.get(url) || 0) + 1); bump(1);
@@ -330,7 +344,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     e.preventDefault();
     const err = $('#loginErr'); err.hidden = true;
     const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'signing in…';
-    settings.relay = $('#inRelay').value.trim(); saveSettings();
+    settings.relay = $('#inRelay').value.trim(); settings.relayStreams = $('#inRelayStreams').checked; saveSettings(); renderStats();
     try {
       await signIn($('#inServers').value.split(/\n|,/), $('#inUser').value.trim(), $('#inPass').value);
       showMain();
@@ -629,10 +643,11 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
   // ---------- boot ----------
   if (acct?.base) {
     $('#main').hidden = false;
-    api('').then(info => { acct.info = info; showMain(); }).catch(() => { $('#main').hidden = true; $('#login').hidden = false; $('#inServers').value = (acct.servers || []).join('\n'); $('#inUser').value = acct.username; });
+    api('').then(info => { acct.info = info; showMain(); }).catch(() => { $('#main').hidden = true; $('#login').hidden = false; $('#inServers').value = (acct.servers || []).join('\n'); $('#inUser').value = acct.username; prefillRelay(); });
   } else {
-    $('#login').hidden = false; $('#inRelay').value = settings.relay;
+    $('#login').hidden = false; prefillRelay();
   }
+  function prefillRelay() { $('#inRelay').value = settings.relay; $('#inRelayStreams').checked = !!settings.relayStreams; }
 })();
 </script>
 </body>
