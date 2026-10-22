@@ -18,6 +18,14 @@ input[type=checkbox],input[type=radio]{width:auto;margin:0 6px 0 0;vertical-alig
 .login h1{margin:0 0 4px;font-size:24px}.login .sub{margin:0 0 16px;color:var(--muted)}
 .login label{display:block;margin:12px 0;font-weight:600;font-size:14px}
 .login label input,.login label textarea{margin-top:6px;font-weight:400}
+.login .modes{display:flex;gap:6px;margin:0 0 6px}
+.login .modes button{flex:1;border-radius:999px}
+.login .modes button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.login .filebtn{display:block;margin:12px 0 0;padding:10px 12px;border:1px dashed var(--muted);border-radius:10px;text-align:center;font-weight:400;color:var(--muted);cursor:pointer}
+.login .filebtn input{display:none}
+.row .meta.now{max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+dialog .srcinfo{margin:12px 0;line-height:1.6}
+dialog .srcinfo div{margin:4px 0}
 .login .relaybox{margin:14px 0 0;padding:4px 12px 10px;border:1px solid var(--line);border-radius:10px}
 .login .relaybox legend{font-weight:600;font-size:14px;padding:0 4px}
 .login .relaybox label{margin:8px 0}

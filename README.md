@@ -47,11 +47,16 @@ in `worker/worker.js` to your site's origin, then in `worker/` run
 
 ## Quiet TV (IPTV player)
 
-`iptv/` is a separate single-page player for Xtream Codes services, served at
-`/iptv/` on the same Pages site. Sign in with your server address(es),
-username and password; it browses live TV (with now/next EPG), movies and
-series, keeps favourites, and plays HLS via hls.js, MPEG-TS via mpegts.js,
-and files via the browser's own player, with an "open in VLC" fallback.
+`iptv/` is a separate single-page player for Xtream Codes services and M3U
+playlists, served at `/iptv/` on the same Pages site. Sign in with a server
+address, username and password, or with a playlist link (or a .m3u file from
+the device). In playlist mode the `group-title` folders become the
+categories, and an XMLTV guide (plain or .gz, taken from the playlist's
+`url-tvg` header when present) is stream-parsed in the browser down to just
+your channels and cached locally for 12 hours. It browses live TV (with
+now/next listings), movies and series, keeps favourites, and plays HLS via
+hls.js, MPEG-TS via mpegts.js, and files via the browser's own player, with
+an "open in VLC" fallback.
 It talks to the provider directly over https when the provider supports it,
 and can use the IPTV relay below otherwise.
 

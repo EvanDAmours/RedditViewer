@@ -27,6 +27,14 @@ input[type=checkbox],input[type=radio]{width:auto;margin:0 6px 0 0;vertical-alig
 .login h1{margin:0 0 4px;font-size:24px}.login .sub{margin:0 0 16px;color:var(--muted)}
 .login label{display:block;margin:12px 0;font-weight:600;font-size:14px}
 .login label input,.login label textarea{margin-top:6px;font-weight:400}
+.login .modes{display:flex;gap:6px;margin:0 0 6px}
+.login .modes button{flex:1;border-radius:999px}
+.login .modes button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.login .filebtn{display:block;margin:12px 0 0;padding:10px 12px;border:1px dashed var(--muted);border-radius:10px;text-align:center;font-weight:400;color:var(--muted);cursor:pointer}
+.login .filebtn input{display:none}
+.row .meta.now{max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+dialog .srcinfo{margin:12px 0;line-height:1.6}
+dialog .srcinfo div{margin:4px 0}
 .login .relaybox{margin:14px 0 0;padding:4px 12px 10px;border:1px solid var(--line);border-radius:10px}
 .login .relaybox legend{font-weight:600;font-size:14px;padding:0 4px}
 .login .relaybox label{margin:8px 0}
@@ -105,11 +113,25 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
 <section id="login" class="login" hidden>
   <form id="loginForm" autocomplete="on">
     <h1>Quiet TV</h1>
-    <p class="sub">Sign in to your Xtream Codes service.</p>
-    <label>Server address(es) <span class="hint">one per line; the first that answers is used</span>
-      <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
-    <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
-    <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
+    <p class="sub">Sign in with an Xtream Codes login or an M3U playlist.</p>
+    <nav class="modes">
+      <button type="button" data-mode="xtream" class="on">Xtream login</button>
+      <button type="button" data-mode="m3u">M3U playlist</button>
+    </nav>
+    <div id="modeXtream">
+      <label>Server address(es) <span class="hint">one per line; the first that answers is used</span>
+        <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
+      <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
+      <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
+    </div>
+    <div id="modeM3u" hidden>
+      <label>Playlist link <span class="hint">a direct .m3u download link, e.g. a Google Drive "download" link</span>
+        <input id="inPlaylist" placeholder="https://…/playlist.m3u" spellcheck="false" inputmode="url"></label>
+      <label>Guide (EPG) link <span class="hint">optional; XMLTV, .gz is fine; taken from the playlist when it names one</span>
+        <input id="inEpg" placeholder="https://…/epg.xml.gz" spellcheck="false" inputmode="url"></label>
+      <label class="filebtn">or open a .m3u file from this device
+        <input id="inFile" type="file" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/x-mpegurl,application/vnd.apple.mpegurl,text/plain"></label>
+    </div>
     <fieldset class="relaybox">
       <legend>Relay <span class="hint">optional; leave blank to talk to the service directly</span></legend>
       <label>Relay URL
@@ -167,6 +189,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     <p class="hint">Requests sent to the relay from this browser: <b id="relayToday">0</b> today (UTC day), <b id="relaySession">0</b> this session.
       An HLS stream is one request per video piece every few seconds; an MPEG-TS stream is one request for the whole sitting.
       Other devices aren't included; the Cloudflare dashboard has the full total. <button type="button" id="relayReset" class="link">reset</button></p>
+    <div id="srcInfo" class="hint srcinfo" hidden></div>
     <p class="hint">Signed in as <span id="who"></span>. <button type="button" id="signOut" class="link">Sign out</button></p>
     <menu><button value="close">close</button></menu>
   </form>
@@ -175,7 +198,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.19/dist/hls.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.2/dist/mpegts.min.js"></script>
 <script>
-/* Quiet TV — a browser player for Xtream Codes services. No build step, no server. */
+/* Quiet TV — a browser player for Xtream Codes services and M3U playlists. No build step, no server. */
 (() => {
   'use strict';
   const $ = (s, r = document) => r.querySelector(s);
@@ -203,6 +226,8 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
   let favs = store.get('favs', []);          // [{sec, id, name, ...}]
   const cache = new Map();
   const state = { sec: 'live', cat: null, query: '' };
+  let entries = [];                          // M3U mode: parsed playlist entries
+  const favKey = () => (acct?.mode === 'm3u' ? 'favs-m3u' : 'favs');
 
   // ---------- network ----------
   function viaRelay(url) {
@@ -252,6 +277,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
   }
   // Every base URL a stream could come from: the signed-in server first, then the other addresses.
   function streamBases() {
+    if (acct?.mode === 'm3u') return [];
     const list = [acct.base];
     for (const srv of acct.servers || []) {
       const o = normalizeServer(srv); if (!o) continue;
@@ -314,6 +340,150 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     } catch {}
   }
 
+  // ---------- playlist (M3U) mode ----------
+  // Small IndexedDB key/value store for the playlist text and the guide subset (too big for localStorage).
+  const idb = {
+    db: null,
+    open() { return new Promise((res, rej) => { if (!window.indexedDB) return rej(new Error('no IndexedDB')); const r = indexedDB.open('qtv', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); },
+    async get(k) { try { const db = this.db || (this.db = await this.open()); return await new Promise((res, rej) => { const t = db.transaction('kv').objectStore('kv').get(k); t.onsuccess = () => res(t.result); t.onerror = () => rej(t.error); }); } catch { return undefined; } },
+    async set(k, v) { try { const db = this.db || (this.db = await this.open()); await new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); } catch {} },
+    async del(k) { try { const db = this.db || (this.db = await this.open()); await new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = res; t.onerror = () => rej(t.error); }); } catch {} },
+  };
+  const decodeEnt = str => String(str || '').replace(/&(amp|lt|gt|quot|apos|#39|#x27|#(\d+)|#x([0-9a-f]+));/gi, (m, n, d, x) =>
+    n === 'amp' ? '&' : n === 'lt' ? '<' : n === 'gt' ? '>' : n === 'quot' ? '"' : (n === 'apos' || n === '#39' || n === '#x27') ? "'" : d ? String.fromCodePoint(+d) : x ? String.fromCodePoint(parseInt(x, 16)) : m);
+
+  // Fetch a URL directly, then through the relay if that fails. GitHub "/raw/" links are moved to the
+  // raw host, which allows browser requests; github.com itself does not.
+  async function fetchAny(url) {
+    url = url.trim().replace(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/raw\//, 'https://raw.githubusercontent.com/$1/$2/');
+    const tries = [url]; const r = viaRelay(url); if (r) tries.push(r);
+    let last;
+    for (const u of tries) {
+      if (u.startsWith('http:') && location.protocol === 'https:') { last = new Error('plain http link on an https page'); continue; }
+      try {
+        const res = await fetch(u, { credentials: 'omit', cache: 'no-store' });
+        if (!res.ok) { last = new Error('HTTP ' + res.status); continue; }
+        return res;
+      } catch (e) { last = e; }
+    }
+    throw last || new Error('unreachable');
+  }
+
+  function parseM3U(text) {
+    const out = []; let tvg = '';
+    const lines = text.split(/\r?\n/);
+    let pending = null, group = '';
+    for (const raw of lines) {
+      const line = raw.trim(); if (!line) continue;
+      if (line.startsWith('#EXTM3U')) { const m = /(?:url-tvg|x-tvg-url)="([^"]*)"/i.exec(line); if (m) tvg = m[1].split(',')[0].trim(); continue; }
+      if (line.startsWith('#EXTINF')) {
+        const attrs = {}; for (const m of line.matchAll(/([\w-]+)="([^"]*)"/g)) attrs[m[1].toLowerCase()] = m[2];
+        const q = line.lastIndexOf('"'); const c = line.indexOf(',', q < 0 ? 0 : q);
+        pending = { name: (c >= 0 ? line.slice(c + 1) : '').trim() || attrs['tvg-name'] || 'Untitled', attrs };
+        continue;
+      }
+      if (line.startsWith('#EXTGRP:')) { group = line.slice(8).trim(); continue; }
+      if (line.startsWith('#')) continue;
+      if (!pending) continue;
+      const a = pending.attrs, url = line;
+      const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+      const ext = (path.match(/\.([a-z0-9]{2,5})$/i) || [])[1]?.toLowerCase() || '';
+      const kind = /\/movie\//.test(path) || /^(mp4|mkv|avi|mov|wmv|flv|webm)$/.test(ext) ? 'vod' : /\/series\//.test(path) ? 'series' : 'live';
+      out.push({ name: pending.name, url, stream_id: url, stream_icon: a['tvg-logo'] || '', group: a['group-title'] || group || '', epg_channel_id: a['tvg-id'] || '', kind, num: out.length + 1 });
+      pending = null;
+    }
+    return { entries: out, tvg };
+  }
+
+  // ----- guide (XMLTV) -----
+  const guide = { byChannel: null, fetchedAt: 0, url: '', matched: 0, programmes: 0, status: '' };
+  function xmltvTime(str) { // "20261022000000 +0000"
+    const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\s*([+-])(\d{2})(\d{2}))?/.exec(str || ''); if (!m) return 0;
+    let t = Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+    if (m[7]) { const off = (+m[8] * 60 + +m[9]) * 60000; t -= m[7] === '+' ? off : -off; }
+    return t / 1000;
+  }
+  const guideFor = id => (id && guide.byChannel && guide.byChannel[id]) || null;
+  function guideNow(id) { const l = guideFor(id); if (!l) return null; const now = Date.now() / 1000; return l.find(p => p[0] <= now && now < p[1]) || null; }
+  function guideStatus(text) { guide.status = text || ''; const el = $('#guideStatus'); if (el) el.textContent = guideText(); }
+  function guideText() {
+    if (guide.status) return guide.status;
+    if (!acct?.epgUrl) return 'no guide URL';
+    if (!guide.byChannel) return 'guide not loaded';
+    return `${guide.matched.toLocaleString()} channels matched, ${guide.programmes.toLocaleString()} programmes, fetched ${ago(guide.fetchedAt)}`;
+  }
+  const ago = t => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+  let guideLoading = null;
+  function loadGuide(force) { return guideLoading || (guideLoading = loadGuideInner(force).finally(() => { guideLoading = null; })); }
+  async function loadGuideInner(force) {
+    if (!acct?.epgUrl || !entries.length) return;
+    const wanted = new Set(entries.map(e => e.epg_channel_id).filter(Boolean));
+    if (!wanted.size) { guideStatus('playlist has no tvg-id tags, so the guide cannot be matched'); return; }
+    const cached = await idb.get('guide');
+    if (!force && cached && cached.url === acct.epgUrl && Date.now() - cached.fetchedAt < 12 * 3600e3) { Object.assign(guide, cached, { status: '' }); renderList(); guideStatus(); return; }
+    if (!window.DecompressionStream || !window.TextDecoderStream) { guideStatus('this browser is too old to read the guide'); return; }
+    guideStatus('loading guide…');
+    try {
+      const res = await fetchAny(acct.epgUrl);
+      const reader = res.body.getReader();
+      const first = await reader.read();
+      const head = first.value || new Uint8Array();
+      const isGz = head[0] === 0x1f && head[1] === 0x8b;
+      const rest = new ReadableStream({ start(c) { if (first.value) c.enqueue(first.value); if (first.done) c.close(); }, async pull(c) { const r = await reader.read(); if (r.done) c.close(); else c.enqueue(r.value); } });
+      const text = (isGz ? rest.pipeThrough(new DecompressionStream('gzip')) : rest).pipeThrough(new TextDecoderStream()).getReader();
+      const byChannel = {}; let buf = '', count = 0, bytes = 0;
+      const lo = Date.now() / 1000 - 3 * 3600, hi = Date.now() / 1000 + 30 * 3600;   // keep a bit of the past and the next ~day
+      const re = /<programme\s+([^>]*)>([\s\S]*?)<\/programme>/g;
+      while (true) {
+        const { value, done } = await text.read(); if (done) break;
+        buf += value; bytes += value.length;
+        let last = 0, m; re.lastIndex = 0;
+        while ((m = re.exec(buf))) {
+          last = re.lastIndex;
+          const attrs = m[1];
+          const ch = decodeEnt((/channel="([^"]*)"/.exec(attrs) || [])[1]);
+          if (!wanted.has(ch)) continue;
+          const start = xmltvTime((/start="([^"]*)"/.exec(attrs) || [])[1]), stop = xmltvTime((/stop="([^"]*)"/.exec(attrs) || [])[1]);
+          if (stop < lo || start > hi) continue;
+          const title = decodeEnt((/<title[^>]*>([\s\S]*?)<\/title>/.exec(m[2]) || [])[1]);
+          const desc = decodeEnt((/<desc[^>]*>([\s\S]*?)<\/desc>/.exec(m[2]) || [])[1]).slice(0, 300);
+          (byChannel[ch] ||= []).push([start, stop, title, desc]); count++;
+        }
+        if (last) buf = buf.slice(last);
+        else { const cut = buf.lastIndexOf('<programme'); if (cut > 0) buf = buf.slice(cut); }
+        if (bytes % 5e6 < value.length) guideStatus(`loading guide… ${(bytes / 1e6).toFixed(0)} MB read, ${count.toLocaleString()} programmes kept`);
+      }
+      for (const k in byChannel) byChannel[k].sort((a, b) => a[0] - b[0]);
+      Object.assign(guide, { byChannel, fetchedAt: Date.now(), url: acct.epgUrl, matched: Object.keys(byChannel).length, programmes: count, status: '' });
+      idb.set('guide', { byChannel, fetchedAt: guide.fetchedAt, url: guide.url, matched: guide.matched, programmes: count });
+      guideStatus(); renderList();
+    } catch (e) { guideStatus('guide failed: ' + e.message); }
+  }
+
+  // ----- playlist sign-in / loading -----
+  async function usePlaylist(text, { playlistUrl = '', epgUrl = '', name = '' } = {}) {
+    const parsed = parseM3U(text);
+    if (!parsed.entries.length) throw new Error(/<html/i.test(text.slice(0, 2000)) ? 'That link returned a web page instead of a playlist. Download the file and use "open a .m3u file" instead.' : 'No channels found in that playlist.');
+    entries = parsed.entries;
+    const groups = new Set(entries.map(e => e.group)).size;
+    acct = { mode: 'm3u', playlistUrl, epgUrl: (epgUrl || parsed.tvg || '').trim(), name: name || (playlistUrl ? new URL(playlistUrl).hostname : 'playlist'), count: entries.length, groups, fetchedAt: Date.now() };
+    cache.clear();
+    await idb.set('playlist', text);
+    store.set('account', acct);
+    return acct;
+  }
+  async function signInM3U(playlistUrl, epgUrl) {
+    let res;
+    try { res = await fetchAny(playlistUrl); } catch (e) { throw new Error(`Could not download the playlist (${e.message}). If the link opens fine in a browser tab, download the file and use "open a .m3u file" instead.`); }
+    return usePlaylist(await res.text(), { playlistUrl, epgUrl });
+  }
+  async function bootM3U() {
+    let text = await idb.get('playlist');
+    if (!text && acct.playlistUrl) { text = await (await fetchAny(acct.playlistUrl)).text(); await idb.set('playlist', text); }
+    if (!text) throw new Error('stored playlist missing');
+    entries = parseM3U(text).entries;
+  }
+
   // ---------- sign in ----------
   async function signIn(servers, username, password) {
     let lastErr = 'No server answered.';
@@ -340,22 +510,50 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     throw new Error(lastErr);
   }
 
-  $('#loginForm').addEventListener('submit', async e => {
-    e.preventDefault();
+  let loginMode = store.get('loginMode', 'xtream');
+  function setLoginMode(m) {
+    loginMode = m; store.set('loginMode', m);
+    document.querySelectorAll('.modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+    $('#modeXtream').hidden = m !== 'xtream'; $('#modeM3u').hidden = m !== 'm3u';
+    document.querySelectorAll('#modeXtream input, #modeXtream textarea').forEach(i => { i.required = m === 'xtream' && i.id !== 'inServers' ? false : false; });
+  }
+  document.querySelectorAll('.modes button').forEach(b => b.addEventListener('click', () => setLoginMode(b.dataset.mode)));
+  async function withBusy(fn) {
     const err = $('#loginErr'); err.hidden = true;
-    const btn = e.target.querySelector('button[type=submit]'); btn.disabled = true; btn.textContent = 'signing in…';
+    const btn = $('#loginForm button[type=submit]'); btn.disabled = true; btn.textContent = 'signing in…';
     settings.relay = $('#inRelay').value.trim(); settings.relayStreams = $('#inRelayStreams').checked; saveSettings(); renderStats();
-    try {
-      await signIn($('#inServers').value.split(/\n|,/), $('#inUser').value.trim(), $('#inPass').value);
-      showMain();
-    } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    try { await fn(); showMain(); }
+    catch (ex) { err.textContent = ex.message; err.hidden = false; }
     btn.disabled = false; btn.textContent = 'Sign in';
+  }
+  $('#loginForm').addEventListener('submit', e => {
+    e.preventDefault();
+    withBusy(async () => {
+      if (loginMode === 'm3u') {
+        const url = $('#inPlaylist').value.trim(); if (!url) throw new Error('Enter the playlist link, or open a .m3u file from this device.');
+        await signInM3U(url, $('#inEpg').value.trim());
+      } else {
+        await signIn($('#inServers').value.split(/\n|,/), $('#inUser').value.trim(), $('#inPass').value);
+      }
+    });
   });
-  $('#signOut').addEventListener('click', () => { store.set('account', null); acct = null; cache.clear(); $('#settings').close(); location.reload(); });
+  $('#inFile').addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    withBusy(async () => usePlaylist(await f.text(), { epgUrl: $('#inEpg').value.trim(), name: f.name }));
+    e.target.value = '';
+  });
+  $('#signOut').addEventListener('click', async () => { store.set('account', null); acct = null; entries = []; cache.clear(); await idb.del('playlist'); await idb.del('guide'); $('#settings').close(); location.reload(); });
 
   // ---------- main browsing ----------
   function showMain() {
     $('#login').hidden = true; $('#player').hidden = true; $('#main').hidden = false;
+    favs = store.get(favKey(), []);
+    if (acct.mode === 'm3u') {
+      $('#who').textContent = `${acct.name} · ${acct.count.toLocaleString()} entries in ${acct.groups} folders`;
+      loadSection(state.sec);
+      loadGuide(false);
+      return;
+    }
     const ui = acct.info?.user_info || {};
     $('#who').textContent = `${acct.username} @ ${acct.base.replace(/^https?:\/\//, '')}` + (ui.exp_date ? ` · expires ${new Date(ui.exp_date * 1000).toLocaleDateString()}` : '');
     loadSection(state.sec);
@@ -376,6 +574,15 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     const catsEl = $('#cats'), listEl = $('#list');
     listEl.replaceChildren(h('p', { class: 'notice' }, 'loading…'));
     if (sec === 'fav') { catsEl.replaceChildren(); items = favs.map(f => ({ ...f, _fav: true })); renderList(); return; }
+    if (acct.mode === 'm3u') {
+      // Folders (group-title) of this section, in playlist order.
+      const groups = [...new Set(entries.filter(e => e.kind === sec).map(e => e.group))];
+      catsEl.replaceChildren(
+        h('button', { 'data-id': '', onclick: () => pickCat(null) }, 'All'),
+        ...groups.map(g => h('button', { 'data-id': g, onclick: () => pickCat(g), title: g || '(no folder)' }, g || '(no folder)')));
+      await pickCat(state.cat);
+      return;
+    }
     try {
       const cats = await api(SEC[sec].cats);
       catsEl.replaceChildren(
@@ -391,6 +598,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     document.querySelectorAll('#cats button').forEach(b => b.classList.toggle('on', b.dataset.id === (id == null ? '' : String(id))));
     document.querySelector('#cats button.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     $('#list').replaceChildren(h('p', { class: 'notice' }, 'loading…'));
+    if (acct.mode === 'm3u') { items = entries.filter(e => e.kind === state.sec && (id == null || e.group === id)); renderList(); return; }
     try {
       items = await api(SEC[state.sec].items, id == null ? {} : { category_id: id });
       items = Array.isArray(items) ? items : [];
@@ -402,8 +610,8 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
   function toggleFav(sec, item) {
     const id = item[SEC[sec].id];
     if (isFav(sec, id)) favs = favs.filter(f => !(f.sec === sec && String(f.id) === String(id)));
-    else favs.push({ sec, id, name: item.name, icon: item.stream_icon || item.cover, ext: item.container_extension, num: item.num });
-    store.set('favs', favs);
+    else favs.push({ sec, id, name: item.name, icon: item.stream_icon || item.cover, ext: item.container_extension, num: item.num, epg: item.epg_channel_id || item.epg || '', url: item.url || '' });
+    store.set(favKey(), favs);
   }
 
   // On an https page, http images are blocked (mixed content); skip them instead of spamming errors.
@@ -426,6 +634,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
           settings.logos && safeImg(x.stream_icon || x.icon || x.cover) ? h('img', { class: 'logo', src: safeImg(x.stream_icon || x.icon || x.cover), loading: 'lazy', alt: '', onerror: e => { e.target.style.visibility = 'hidden'; } }) : null,
           h('span', { class: 'num' }, x.num ? String(x.num) : ''),
           h('span', { class: 'name' }, x.name),
+          (() => { const p = guideNow(x.epg_channel_id || x.epg); return p ? h('span', { class: 'meta now', title: p[2] }, p[2]) : null; })(),
           x.tv_archive ? h('span', { class: 'meta' }, 'catch-up') : null,
           isFav(s, x[SEC[s]?.id] ?? x.id) ? h('span', { class: 'star' }, '★') : null);
       }), ...(capNote ? [capNote] : []));
@@ -509,9 +718,18 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     }
   }
   let current = null;
+  function liveUrlFor(fmt, base) {
+    if (acct.mode === 'm3u') {
+      let u = current.item.url || String(current.id);
+      if (fmt && settings.format !== 'auto' && /\.(ts|m3u8)(\?|$)/i.test(u)) u = u.replace(/\.(ts|m3u8)(\?|$)/i, `.${fmt}$2`);
+      else if (fmt && current.triedAlt && /\.(ts|m3u8)(\?|$)/i.test(u)) u = u.replace(/\.(ts|m3u8)(\?|$)/i, `.${fmt}$2`);
+      return settings.relayStreams && viaRelay(u) ? viaRelay(u) : u;
+    }
+    return streamUrl('live', current.id, fmt, base);
+  }
   function startLive(base, fmt) {
     current.base = base; current.fmt = fmt;
-    current.url = streamUrl('live', current.id, fmt, base);
+    current.url = liveUrlFor(fmt, base);
     playUrl(current.url, { live: true });
   }
   // On failure: one more try with the other format on the same server, then stop and explain.
@@ -527,9 +745,12 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     if (current.sec === 'live' && !codecProblem && settings.format === 'auto' && !current.triedAlt) {
       current.triedAlt = true;
       const alt = current.fmt === 'm3u8' ? 'ts' : 'm3u8';
-      showMsg(`trying the .${alt} version…`);
-      current.url = streamUrl('live', current.id, alt, current.base); current.fmt = alt;
-      return playUrl(current.url, { live: true, keepMsg: true });
+      const altUrl = liveUrlFor(alt, current.base);
+      if (altUrl !== url) {
+        showMsg(`trying the .${alt} version…`);
+        current.url = altUrl; current.fmt = alt;
+        return playUrl(current.url, { live: true, keepMsg: true });
+      }
     }
     const all = current.log.join('\n');
     const refused = /HTTP (4\d\d|5\d\d)/.test(all);
@@ -554,7 +775,9 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     showMsg(hint, current.log.join('\n'), buttons);
   }
   function preferredFmt() {
-    return settings.format === 'auto' ? (acct.info?.user_info?.allowed_output_formats?.includes('m3u8') ? 'm3u8' : 'ts') : settings.format;
+    if (settings.format !== 'auto') return settings.format;
+    if (acct.mode === 'm3u') { const u = current?.item?.url || String(current?.id || ''); return /\.m3u8(\?|$)/i.test(u) ? 'm3u8' : 'ts'; }
+    return acct.info?.user_info?.allowed_output_formats?.includes('m3u8') ? 'm3u8' : 'ts';
   }
 
   async function open(sec, item) {
@@ -565,10 +788,15 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     const id = item[SEC[sec].id] ?? item.id;
     $('#pFav').classList.toggle('on', isFav(sec, id));
     $('#pFav').onclick = () => { toggleFav(sec, { ...item, [SEC[sec].id]: id }); $('#pFav').classList.toggle('on', isFav(sec, id)); };
-    if (sec === 'live') {
+    if (acct.mode === 'm3u' && sec !== 'live') {
+      current.url = settings.relayStreams && viaRelay(item.url || String(id)) ? viaRelay(item.url || String(id)) : (item.url || String(id));
+      const ext = ((item.url || '').split('?')[0].match(/\.([a-z0-9]{2,5})$/i) || [])[1] || '';
+      if (/^(mkv|avi|wmv|flv)$/i.test(ext)) showMsg(`This is an .${ext} file, which browsers usually can't play. Use "⤓ .m3u" to open it in VLC.`);
+      playUrl(current.url);
+    } else if (sec === 'live') {
       current.id = id;
       startLive(streamBases()[0], preferredFmt());
-      loadEpg(id);
+      loadEpg(acct.mode === 'm3u' ? (item.epg_channel_id || item.epg || '') : id);
     } else if (sec === 'vod') {
       const ext = item.container_extension || item.ext || 'mp4';
       current.url = streamUrl('movie', id, ext);
@@ -589,6 +817,19 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
 
   const b64 = s => { try { return decodeURIComponent(escape(atob(s))); } catch { return s || ''; } };
   async function loadEpg(id) {
+    if (acct.mode === 'm3u') {
+      const now = Date.now() / 1000;
+      const all = guideFor(id) || [];
+      const from = Math.max(0, all.findIndex(p => p[1] > now));
+      const list = all.length ? all.slice(from, from + 6) : [];
+      const fmt = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      $('#epg').replaceChildren(...list.map(p => h('div', { class: 'prog' + (p[0] <= now && now < p[1] ? ' now' : '') },
+        h('div', { class: 'time' }, `${fmt(p[0])} – ${fmt(p[1])}`),
+        h('div', null, h('b', null, p[2]), p[3] ? h('div', { class: 'desc' }, p[3]) : null))));
+      if (!list.length) $('#epg').replaceChildren(h('p', { class: 'notice' }, id ? (guide.byChannel ? 'no listings for this channel' : guideText()) : 'this channel has no guide id'));
+      const cur = list.find(p => p[0] <= now && now < p[1]); if (cur) $('#pSub').textContent = 'now: ' + cur[2];
+      return;
+    }
     try {
       const d = await api('get_short_epg', { stream_id: id, limit: 6 });
       const list = d?.epg_listings || [];
@@ -637,6 +878,15 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     $('#optLogos').checked = settings.logos; $('#optFormat').value = settings.format;
     $('#optRelay').value = settings.relay; $('#optRelayStreams').checked = settings.relayStreams;
     renderStats();
+    const src = $('#srcInfo');
+    if (acct?.mode === 'm3u') {
+      src.hidden = false;
+      src.replaceChildren(
+        h('div', null, `Playlist: ${acct.name}, ${acct.count.toLocaleString()} entries in ${acct.groups} folders, fetched ${ago(acct.fetchedAt)}. `,
+          acct.playlistUrl ? h('button', { type: 'button', class: 'link', onclick: async e => { e.target.textContent = 'refreshing…'; try { await signInM3U(acct.playlistUrl, acct.epgUrl); showMain(); e.target.textContent = 'refreshed'; } catch (ex) { e.target.textContent = 'failed: ' + ex.message; } } }, 'refresh playlist') : null),
+        h('div', null, 'Guide: ', h('span', { id: 'guideStatus' }, guideText()), ' ',
+          acct.epgUrl ? h('button', { type: 'button', class: 'link', onclick: () => loadGuide(true) }, 'refresh guide') : null));
+    } else src.hidden = true;
     dlg.showModal();
   });
   dlg.addEventListener('close', () => {
@@ -649,7 +899,11 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
   renderStats();
 
   // ---------- boot ----------
-  if (acct?.base) {
+  setLoginMode(loginMode);
+  if (acct?.mode === 'm3u') {
+    $('#main').hidden = false; $('#list').replaceChildren(h('p', { class: 'notice' }, 'loading playlist…'));
+    bootM3U().then(showMain).catch(() => { $('#main').hidden = true; $('#login').hidden = false; setLoginMode('m3u'); $('#inPlaylist').value = acct.playlistUrl || ''; $('#inEpg').value = acct.epgUrl || ''; prefillRelay(); });
+  } else if (acct?.base) {
     $('#main').hidden = false;
     api('').then(info => { acct.info = info; showMain(); }).catch(() => { $('#main').hidden = true; $('#login').hidden = false; $('#inServers').value = (acct.servers || []).join('\n'); $('#inUser').value = acct.username; prefillRelay(); });
   } else {

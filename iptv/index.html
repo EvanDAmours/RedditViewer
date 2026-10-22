@@ -14,11 +14,25 @@
 <section id="login" class="login" hidden>
   <form id="loginForm" autocomplete="on">
     <h1>Quiet TV</h1>
-    <p class="sub">Sign in to your Xtream Codes service.</p>
-    <label>Server address(es) <span class="hint">one per line; the first that answers is used</span>
-      <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
-    <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
-    <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
+    <p class="sub">Sign in with an Xtream Codes login or an M3U playlist.</p>
+    <nav class="modes">
+      <button type="button" data-mode="xtream" class="on">Xtream login</button>
+      <button type="button" data-mode="m3u">M3U playlist</button>
+    </nav>
+    <div id="modeXtream">
+      <label>Server address(es) <span class="hint">one per line; the first that answers is used</span>
+        <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
+      <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
+      <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
+    </div>
+    <div id="modeM3u" hidden>
+      <label>Playlist link <span class="hint">a direct .m3u download link, e.g. a Google Drive "download" link</span>
+        <input id="inPlaylist" placeholder="https://…/playlist.m3u" spellcheck="false" inputmode="url"></label>
+      <label>Guide (EPG) link <span class="hint">optional; XMLTV, .gz is fine; taken from the playlist when it names one</span>
+        <input id="inEpg" placeholder="https://…/epg.xml.gz" spellcheck="false" inputmode="url"></label>
+      <label class="filebtn">or open a .m3u file from this device
+        <input id="inFile" type="file" accept=".m3u,.m3u8,.txt,audio/x-mpegurl,application/x-mpegurl,application/vnd.apple.mpegurl,text/plain"></label>
+    </div>
     <fieldset class="relaybox">
       <legend>Relay <span class="hint">optional; leave blank to talk to the service directly</span></legend>
       <label>Relay URL
@@ -78,6 +92,7 @@
     <p class="hint">Requests sent to the relay from this browser: <b id="relayToday">0</b> today (UTC day), <b id="relaySession">0</b> this session.
       An HLS stream is one request per video piece every few seconds; an MPEG-TS stream is one request for the whole sitting.
       Other devices aren't included; the Cloudflare dashboard has the full total. <button type="button" id="relayReset" class="link">reset</button></p>
+    <div id="srcInfo" class="hint srcinfo" hidden></div>
     <p class="hint">Signed in as <span id="who"></span>. <button type="button" id="signOut" class="link">Sign out</button></p>
     <menu><button value="close">close</button></menu>
   </form>
