@@ -354,9 +354,20 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
 
   // Fetch a URL directly, then through the relay if that fails. GitHub "/raw/" links are moved to the
   // raw host, which allows browser requests; github.com itself does not.
+  // Google Drive: ordinary share links become direct-download links. Drive refuses downloads that a
+  // browser marks as coming from another site (Sec-Fetch-Site: cross-site), which a page cannot avoid,
+  // so Drive links are fetched through the relay only.
+  const isDrive = u => /^https?:\/\/(drive|docs)\.(usercontent\.)?google\.com\//i.test(u);
+  function normalizeDrive(u) {
+    const m = /^https?:\/\/drive\.google\.com\/(?:file\/d\/([\w-]+)|open\?id=([\w-]+)|uc\?(?:export=download&)?id=([\w-]+))/i.exec(u);
+    const id = m && (m[1] || m[2] || m[3]);
+    return id ? `https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=t` : u;
+  }
   async function fetchAny(url) {
-    url = url.trim().replace(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/raw\//, 'https://raw.githubusercontent.com/$1/$2/');
-    const tries = [url]; const r = viaRelay(url); if (r) tries.push(r);
+    url = normalizeDrive(url.trim()).replace(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/raw\//, 'https://raw.githubusercontent.com/$1/$2/');
+    const r = viaRelay(url);
+    if (isDrive(url) && !r) throw new Error('Google Drive refuses downloads requested by another website. Enter the relay URL above (the download is a single relay request), or download the file and use "open a .m3u file".');
+    const tries = isDrive(url) ? [r] : [url, ...(r ? [r] : [])];
     let last;
     for (const u of tries) {
       if (u.startsWith('http:') && location.protocol === 'https:') { last = new Error('plain http link on an https page'); continue; }
