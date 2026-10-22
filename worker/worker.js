@@ -1,9 +1,9 @@
 // Quiet Reddit relay — a tiny Cloudflare Worker that forwards requests to Reddit
 // and adds the CORS headers browsers need.
 //
-// Reddit refuses anonymous requests from cloud IPs, so the relay authenticates with
-// Reddit's official API using an app you register at https://www.reddit.com/prefs/apps
-// Set these worker secrets (wrangler secret put NAME):
+// Reddit refuses anonymous JSON requests from cloud IPs but still serves RSS/Atom
+// feeds, which is what the app uses. JSON endpoints are also relayed if you have an
+// approved Reddit API app; set these worker secrets (wrangler secret put NAME):
 //   REDDIT_CLIENT_ID      the string under the app name
 //   REDDIT_CLIENT_SECRET  the "secret" (omit for "installed app" type apps)
 
@@ -57,11 +57,17 @@ export default {
       target = new URL('https://www.reddit.com' + u.pathname + u.search);
     }
     if (!/(^|\.)reddit\.com$/.test(target.hostname)) return reply('only reddit.com is relayed', 400);
-    if (!/\.json$/.test(target.pathname) && !target.pathname.startsWith('/api/morechildren')) return reply('only JSON endpoints are relayed', 400);
+    const isFeed = /\.rss$/.test(target.pathname);
+    if (!isFeed && !/\.json$/.test(target.pathname) && !target.pathname.startsWith('/api/morechildren')) return reply('only feed and JSON endpoints are relayed', 400);
 
-    const headers = { 'User-Agent': UA, 'Accept': 'application/json' };
-    let token;
-    try { token = await appToken(env); } catch (e) { return reply(JSON.stringify({ error: e.message }), 502, 'application/json'); }
+    // RSS/Atom feeds are served to anonymous clients; JSON needs an authenticated app.
+    const headers = isFeed
+      ? { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36', 'Accept': 'application/atom+xml, application/xml' }
+      : { 'User-Agent': UA, 'Accept': 'application/json' };
+    let token = null;
+    if (!isFeed) {
+      try { token = await appToken(env); } catch (e) { return reply(JSON.stringify({ error: e.message }), 502, 'application/json'); }
+    }
     if (token) {
       target.hostname = 'oauth.reddit.com';
       headers['Authorization'] = 'Bearer ' + token;

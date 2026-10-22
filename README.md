@@ -9,7 +9,7 @@ No server, no build step, no account: it reads Reddit's public JSON directly.
 - **Quiet by default.** NSFW and pinned posts are hidden (toggle in settings),
   and you can mute posts by keyword.
 - Browse any subreddit or multi (`a+b+c`), sort by hot/new/top/rising,
-  read full comment threads with collapsible replies, star favourite subreddits,
+  read comment threads, star favourite subreddits,
   light and dark themes. Works on phones.
 
 ## Use it
@@ -28,22 +28,21 @@ The repo is plain static files, so any other static host works too.
 
 ## How it reaches Reddit
 
-Reddit refuses anonymous requests from browsers on other sites and from cloud
-servers, so the app talks to Reddit through a small relay: a Cloudflare Worker
-(`worker/worker.js`) that authenticates with Reddit's official API using a
-registered Reddit app, and adds the CORS headers browsers need. The deployed
-relay URL is the app's default; you can point it at your own in ⚙ settings.
+Reddit refuses anonymous JSON requests from browsers on other sites and from
+cloud servers, and new API apps need manual approval. It does still publish
+RSS/Atom feeds for subreddits, multis and comment threads, so the app reads
+those through a small relay: a Cloudflare Worker (`worker/worker.js`) that
+forwards feeds and adds the CORS headers browsers need. The deployed relay is
+the app's default; you can point it at your own in ⚙ settings.
 
-To run your own relay:
+What feeds give up compared to the JSON API: no vote counts, no comment
+counts, no NSFW/pinned flags, no reply nesting (comments show flat), and
+galleries/videos open on Reddit instead of inline.
 
-1. Register an app at <https://www.reddit.com/prefs/apps> (type **script**,
-   any name, redirect URI `http://localhost`). Note the client id (under the
-   app name) and the secret.
-2. Create a free Cloudflare account, then in `worker/`:
-   `npx wrangler login`, `npx wrangler secret put REDDIT_CLIENT_ID`,
-   `npx wrangler secret put REDDIT_CLIENT_SECRET`, `npx wrangler deploy`.
-3. Edit `ALLOWED_ORIGINS` in `worker.js` to your site's origin, and paste the
-   worker URL into ⚙ settings (or into `DEFAULTS.proxy` in `app.js`).
+To run your own relay: create a free Cloudflare account, edit `ALLOWED_ORIGINS`
+in `worker/worker.js` to your site's origin, then in `worker/` run
+`npx wrangler login` and `npx wrangler deploy`. Paste the worker URL into
+⚙ settings or into `DEFAULTS.proxy` in `app.js`.
 
 ## Development
 

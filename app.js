@@ -34,55 +34,57 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   // ---------- fetching ----------
-  // Reddit no longer reliably sends CORS headers for unauthenticated browser requests,
-  // so we try a few direct hosts and then a user-supplied relay (see worker/).
-  function viaProxy(url) {
-    const p = settings.proxy.trim();
-    if (!p) return null;
-    if (/[=?]$/.test(p)) return p + encodeURIComponent(url);           // https://relay/?url=
-    const base = p.replace(/\/+$/, '');
-    return base + url.replace(/^https?:\/\/[^/]+/, '');                // https://relay  (path mirrored)
+  // Reddit refuses anonymous JSON requests from browsers and cloud servers, but still
+  // serves RSS/Atom feeds. A small relay (worker/) forwards feeds with CORS headers.
+  function relayUrl(pathAndQuery) {
+    const p = (settings.proxy || DEFAULTS.proxy).trim();
+    const full = 'https://www.reddit.com' + pathAndQuery;
+    if (/[=?]$/.test(p)) return p + encodeURIComponent(full);
+    return p.replace(/\/+$/, '') + pathAndQuery;
   }
-  const SETUP_HINT = ' Reddit blocks direct browser requests on most networks now; set up the free relay described in the README and paste its URL into ⚙ settings.';
-  // JSONP: a <script> tag is not subject to CORS, so this works from a home connection
-  // even when fetch() is refused. Reddit may or may not still honour it.
-  let jsonpSeq = 0;
-  function jsonp(url, timeout = 12000) {
-    return new Promise((resolve, reject) => {
-      const cb = '__qr_cb' + (++jsonpSeq);
-      const sc = document.createElement('script');
-      const done = (fn, v) => { delete window[cb]; sc.remove(); clearTimeout(timer); fn(v); };
-      const timer = setTimeout(() => done(reject, new Error('jsonp timeout')), timeout);
-      window[cb] = data => done(resolve, data);
-      sc.onerror = () => done(reject, new Error('jsonp failed'));
-      sc.src = url + '&jsonp=' + cb;
-      document.head.append(sc);
-    });
-  }
-  async function redditRaw(pathAndQuery) {
-    const direct = ['https://www.reddit.com', 'https://api.reddit.com', 'https://old.reddit.com'].map(hst => hst + pathAndQuery);
-    const prox = viaProxy(direct[0]);
-    const attempts = prox ? [direct[0], prox, ...direct.slice(1)] : direct;
-    let lastErr;
-    try { return await jsonp(direct[0]); } catch (e) { lastErr = e; }
-    for (const target of attempts) {
-      let res;
-      try { res = await fetch(target, { credentials: 'omit' }); }
-      catch (e) { lastErr = new Error('Could not reach Reddit (network/CORS).' + (prox ? '' : SETUP_HINT)); continue; }
-      if (res.ok) {
-        try { return await res.json(); } catch { lastErr = new Error('Reddit returned something that was not JSON.'); continue; }
-      }
-      if (res.status === 429) lastErr = new Error('Reddit is rate-limiting requests (429). Wait a minute and try again.');
-      else if (res.status === 403) lastErr = new Error('Reddit refused the request (403): private/quarantined subreddit, or Reddit is blocking this network.' + (prox ? '' : SETUP_HINT));
-      else if (res.status === 404) { throw new Error('Not found (404). Check the subreddit name.'); }
-      else lastErr = new Error('Reddit returned HTTP ' + res.status);
-    }
-    throw lastErr;
-  }
-  function reddit(path, params = {}) {
-    const q = new URLSearchParams({ raw_json: '1' });
+  async function feed(path, params = {}) {
+    const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, v);
-    return redditRaw(path + '.json?' + q);
+    const target = relayUrl(path + '/.rss?' + q);
+    let res;
+    try { res = await fetch(target, { credentials: 'omit' }); }
+    catch { throw new Error('Could not reach the relay. Check the relay URL in ⚙ settings.'); }
+    if (res.status === 429) throw new Error('Reddit is rate-limiting requests (429). Wait a minute and try again.');
+    if (res.status === 403) throw new Error('Reddit refused the request (403): private, banned or quarantined subreddit.');
+    if (res.status === 404) throw new Error('Not found (404). Check the subreddit name.');
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' from relay');
+    const xml = new DOMParser().parseFromString(await res.text(), 'application/xml');
+    if (xml.querySelector('parsererror')) throw new Error('Reddit returned something that was not a feed.');
+    return [...xml.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'entry')].map(entryToThing);
+  }
+
+  // Turn an Atom entry into an object shaped like Reddit's JSON "thing" data.
+  function entryToThing(e) {
+    const g = tag => { const el = e.getElementsByTagNameNS('http://www.w3.org/2005/Atom', tag)[0]; return el ? el.textContent : ''; };
+    const fullId = g('id'); const kind = fullId.slice(0, 2); const id = fullId.slice(3);
+    const link = e.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'link')[0]?.getAttribute('href') || '';
+    const cat = e.getElementsByTagNameNS('http://www.w3.org/2005/Atom', 'category')[0];
+    const subreddit = cat?.getAttribute('term') || (link.match(/\/r\/([^/]+)/) || [])[1] || '';
+    const thumb = [...e.children].find(c => c.localName === 'thumbnail')?.getAttribute('url') || '';
+    const author = g('name').replace(/^\/?u\//, '') || '[deleted]';
+    const created_utc = Date.parse(g('published') || g('updated')) / 1000 || 0;
+    const content = new DOMParser().parseFromString('<div>' + g('content') + '</div>', 'text/html').body.firstChild;
+    const permalink = link.replace(/^https?:\/\/[^/]+/, '');
+    if (kind === 't1') return { kind, id, name: fullId, subreddit, author, created_utc, permalink, body_html: content.innerHTML };
+    // Link posts: a <table> with thumbnail, "submitted by", [link] and [comments].
+    const table = content.querySelector('table');
+    let url = link, is_self = true, selftext_html = '';
+    if (table) {
+      const linkA = [...table.querySelectorAll('a')].find(a => a.textContent.trim() === '[link]');
+      if (linkA) url = linkA.getAttribute('href') || link;
+      is_self = /^https?:\/\/(www\.)?reddit\.com\/r\/[^/]+\/comments\//.test(url);
+      table.remove();
+    }
+    const md = content.querySelector('.md');
+    if (md) selftext_html = md.outerHTML;
+    const domain = (url.match(/^https?:\/\/([^/]+)/) || [])[1] || '';
+    return { kind, id, name: fullId, subreddit, author, created_utc, permalink, title: g('title'), url, is_self, selftext_html, thumbnail: thumb, domain,
+      score: null, num_comments: null, over_18: false, stickied: false, link_flair_text: '' };
   }
 
   // ---------- post filtering / sanitizing ----------
@@ -131,37 +133,12 @@
 
   // ---------- media (hidden until clicked) ----------
   function mediaFor(p) {
-    const items = [];
-    const hint = p.post_hint;
-    const url = p.url_overridden_by_dest || p.url || '';
-    if (p.is_gallery && p.media_metadata) {
-      const order = (p.gallery_data?.items || []).map(i => i.media_id);
-      for (const id of order.length ? order : Object.keys(p.media_metadata)) {
-        const m = p.media_metadata[id];
-        if (!m || m.status !== 'valid') continue;
-        const src = m.s?.u || m.s?.gif || (m.p || []).at(-1)?.u;
-        if (src) items.push({ type: 'image', src });
-      }
-      return items.length ? { kind: 'gallery', items } : null;
-    }
-    if (p.is_video && p.media?.reddit_video) {
-      const v = p.media.reddit_video;
-      return { kind: 'video', src: v.fallback_url, hls: v.hls_url, poster: p.preview?.images?.[0]?.source?.url };
-    }
-    if (p.preview?.reddit_video_preview) {
-      return { kind: 'video', src: p.preview.reddit_video_preview.fallback_url };
-    }
-    if (hint === 'image' || /\.(jpe?g|png|gif|webp)(\?|$)/i.test(url)) {
-      const variants = p.preview?.images?.[0];
-      const gif = variants?.variants?.gif?.source?.url || variants?.variants?.mp4?.source?.url;
-      return { kind: 'image', src: /\.gif/i.test(url) && gif ? gif : (variants?.source?.url || url) };
-    }
-    if (hint === 'rich:video' || p.media?.oembed) {
-      return { kind: 'embed', url, title: p.media?.oembed?.title || p.domain };
-    }
-    if (hint === 'link' && p.preview?.images?.[0]) {
-      return { kind: 'linkpreview', src: p.preview.images[0].source.url, url };
-    }
+    const url = p.url || '';
+    if (/\.(jpe?g|png|gif|webp)(\?|$)/i.test(url)) return { kind: 'image', src: url };
+    if (/^https?:\/\/(www\.)?reddit\.com\/gallery\//.test(url)) return { kind: 'embed', url, title: 'gallery', domain: 'reddit' };
+    if (/^https?:\/\/v\.redd\.it\//.test(url)) return { kind: 'embed', url, title: 'video', domain: 'reddit' };
+    if (/youtube\.com|youtu\.be|vimeo\.com|streamable\.com|imgur\.com|gfycat\.com|redgifs\.com/i.test(url)) return { kind: 'embed', url, title: 'media', domain: p.domain };
+    if (p.thumbnail && !p.is_self) return { kind: 'linkpreview', src: p.thumbnail, url };
     return null;
   }
 
@@ -176,7 +153,7 @@
     const m = mediaFor(p);
     if (!m) return null;
     const box = h('div', { class: 'media' });
-    const label = { image: 'image', gallery: `gallery (${m.items?.length})`, video: 'video', embed: 'embedded video', linkpreview: 'link preview' }[m.kind];
+    const label = { image: 'image', gallery: 'gallery', video: 'video', embed: m.title || 'media', linkpreview: 'preview' }[m.kind];
     const btn = h('button', { class: 'reveal', type: 'button' }, thumbEl(p), `▸ show ${label}`);
     btn.addEventListener('click', () => {
       box.replaceChildren(renderMedia(m), h('button', { class: 'hide', type: 'button', onclick: () => box.replaceChildren(btn) }, '▴ hide'));
@@ -197,7 +174,7 @@
         if (m.hls && v.canPlayType('application/vnd.apple.mpegurl')) v.src = m.hls;
         return v;
       }
-      case 'embed': return h('p', null, h('a', { href: m.url, target: '_blank', rel: 'noopener noreferrer' }, `open ${m.title} ↗`));
+      case 'embed': return h('p', null, h('a', { href: m.url, target: '_blank', rel: 'noopener noreferrer' }, `open ${m.title} on ${m.domain || 'site'} ↗`));
     }
   }
 
@@ -206,8 +183,8 @@
     const permalink = `#/r/${p.subreddit}/comments/${p.id}`;
     const external = !p.is_self && p.url && !/^https?:\/\/(www\.)?reddit\.com\//.test(p.url);
     const title = h('a', { class: 'title', href: external ? p.url : permalink, target: external ? '_blank' : null, rel: external ? 'noopener noreferrer' : null, html: esc(p.title) });
-    const el = h('article', { class: 'post', dataset: { id: p.id } },
-      h('div', { class: 'score' }, h('b', null, num(p.score)), p.upvote_ratio ? `${Math.round(p.upvote_ratio * 100)}%` : ''),
+    const el = h('article', { class: 'post' + (p.score == null ? ' noscore' : ''), dataset: { id: p.id } },
+      p.score != null ? h('div', { class: 'score' }, h('b', null, num(p.score))) : null,
       h('div', null,
         h('div', null, title,
           external ? h('span', { class: 'domain' }, p.domain) : null,
@@ -218,17 +195,18 @@
           h('a', { href: `#/r/${p.subreddit}` }, `r/${p.subreddit}`), ' · ',
           h('a', { href: `https://www.reddit.com/user/${p.author}`, target: '_blank', rel: 'noopener noreferrer' }, `u/${p.author}`),
           ` · ${ago(p.created_utc)} · `,
-          h('a', { href: permalink }, `${num(p.num_comments)} comments`),
+          h('a', { href: permalink }, p.num_comments != null ? `${num(p.num_comments)} comments` : 'comments'),
           ' · ', h('a', { href: 'https://www.reddit.com' + p.permalink, target: '_blank', rel: 'noopener noreferrer' }, 'reddit ↗')),
         mediaBlock(p),
         full && p.selftext_html ? h('div', { class: 'selftext md', html: sanitize(p.selftext_html) }) : null));
     return el;
   }
 
+  const PAGE = 25;
   async function listing(sub, sort, t, after) {
-    const data = await reddit(`/r/${sub}/${sort}`, { t: sort === 'top' ? t : null, after, limit: 25 });
-    const posts = data.data.children.map(c => c.data).filter(keep);
-    return { posts, after: data.data.after };
+    const things = await feed(`/r/${sub}/${sort}`, { t: sort === 'top' ? t : null, after, limit: PAGE });
+    const posts = things.filter(x => x.kind === 't3').filter(keep);
+    return { posts, after: things.length >= PAGE ? things.at(-1).name : null };
   }
 
   function showListing(sub, sort, t) {
@@ -255,55 +233,33 @@
     page();
   }
 
-  function commentEl(c, op, sub) {
-    if (c.kind === 'more') {
-      if (!c.data.children?.length) return null;
-      const b = h('button', { class: 'loadmore', type: 'button' }, `load ${c.data.count || c.data.children.length} more comments`);
-      b.addEventListener('click', async () => {
-        b.textContent = 'loading…'; b.disabled = true;
-        try {
-          const ids = c.data.children.slice(0, 100);
-          const q = new URLSearchParams({ raw_json: '1', api_type: 'json', link_id: 't3_' + op.id, children: ids.join(',') });
-          const j = await redditRaw('/api/morechildren.json?' + q);
-          const things = j.json?.data?.things || [];
-          // morechildren returns a flat list with parent_id; rebuild the tree
-          const byId = new Map(things.map(t => [t.data.name, Object.assign(t, { data: Object.assign({}, t.data, { replies: { data: { children: [] } } }) })]));
-          const roots = [];
-          for (const t of things) { const par = byId.get(t.data.parent_id); (par ? par.data.replies.data.children : roots).push(t); }
-          b.replaceWith(...roots.map(t => commentEl(t, op, sub)).filter(Boolean));
-        } catch { b.textContent = 'failed to load'; }
-      });
-      return b;
-    }
-    const d = c.data;
-    const kids = d.replies?.data?.children || [];
-    const el = h('div', { class: 'comment' + (d.collapsed ? ' collapsed' : ''), dataset: { id: d.id } });
+  function commentEl(d, op) {
+    const el = h('div', { class: 'comment', dataset: { id: d.id } });
     const head = h('div', { class: 'chead' },
-      h('span', { class: 'toggle' }, d.collapsed ? '▸' : '▾'), ' ',
+      h('span', { class: 'toggle' }, '▾'), ' ',
       h('span', { class: 'author' + (d.author === op.author ? ' op' : '') }, d.author),
-      d.distinguished ? h('span', { class: 'flair' }, d.distinguished) : null,
-      ` · ${num(d.score ?? 0)} pts · ${ago(d.created_utc)}`,
-      d.stickied ? ' · pinned' : '');
+      ` · ${ago(d.created_utc)} · `,
+      h('a', { href: 'https://www.reddit.com' + d.permalink, target: '_blank', rel: 'noopener noreferrer', onclick: e => e.stopPropagation() }, 'context ↗'));
     head.addEventListener('click', () => { el.classList.toggle('collapsed'); head.firstChild.textContent = el.classList.contains('collapsed') ? '▸' : '▾'; });
-    el.append(head,
-      h('div', { class: 'body md', html: sanitize(d.body_html) }),
-      kids.length ? h('div', { class: 'children' }, kids.map(k => commentEl(k, op, sub)).filter(Boolean)) : null);
+    el.append(head, h('div', { class: 'body md', html: sanitize(d.body_html) }));
     return el;
   }
 
   async function showThread(sub, id, csort) {
     app.replaceChildren(h('p', { class: 'notice' }, 'loading…'));
     try {
-      const [postL, commentL] = await reddit(`/r/${sub}/comments/${id}`, { sort: csort, limit: 200 });
-      const p = postL.data.children[0].data;
+      const things = await feed(`/r/${sub}/comments/${id}`, { sort: csort, limit: 200 });
+      const p = things.find(x => x.kind === 't3');
+      if (!p) throw new Error('Post not found.');
+      const comments = things.filter(x => x.kind === 't1');
       document.title = `${p.title} · quiet reddit`;
       const sortSel = h('select', { onchange: e => { location.hash = `#/r/${sub}/comments/${id}/${e.target.value}`; } },
         ['confidence', 'top', 'new', 'controversial', 'old', 'qa'].map(s => h('option', { value: s, selected: s === (csort || 'confidence') }, s === 'confidence' ? 'best' : s)));
       app.replaceChildren(h('div', { class: 'thread' },
         h('a', { class: 'back', href: `#/r/${sub}` }, `← r/${sub}`),
         postEl(p, { full: true }),
-        h('div', { class: 'meta' }, 'sort comments: ', sortSel),
-        h('div', { class: 'comments' }, commentL.data.children.map(c => commentEl(c, p, sub)).filter(Boolean))));
+        h('div', { class: 'meta' }, 'sort comments: ', sortSel, ` · ${comments.length} shown, flat (Reddit's feed has no reply nesting)`),
+        h('div', { class: 'comments' }, comments.length ? comments.map(c => commentEl(c, p)) : h('p', { class: 'notice' }, 'no comments yet'))));
     } catch (e) {
       app.replaceChildren(h('p', { class: 'notice error' }, e.message));
     }
