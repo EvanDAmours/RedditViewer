@@ -274,7 +274,15 @@
     const m = $('#pMsg'); m.hidden = !text;
     m.replaceChildren(h('div', null, text, err ? h('div', { class: 'err' }, err) : null, extra || null));
   }
-  const maskUrl = u => String(u).replace(/\/(live|movie|series)\/[^/]+\/[^/]+\//, '/$1/…/…/');
+  // Hide login details and the relay key in anything shown on screen (plain and URL-encoded forms).
+  const maskUrl = u => {
+    let out = String(u)
+      .replace(/\/(live|movie|series)\/[^/]+\/[^/]+\//, '/$1/…/…/')
+      .replace(/%2F(live|movie|series)%2F[^%]+%2F[^%]+%2F/i, '%2F$1%2F…%2F…%2F');
+    const o = relayOrigin();
+    if (o && out.startsWith(o + '/')) { const m = out.slice(o.length).match(/^\/([^/?]+)(\/.*)$/); if (m) out = o + '/…' + m[2]; }
+    return out;
+  };
   const CONNECT_LIMIT = 12000;
   let watchdog = null;
   function playUrl(url, { live, keepMsg } = {}) {
