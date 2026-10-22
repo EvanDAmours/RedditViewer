@@ -6,13 +6,13 @@
   // ---------- settings ----------
   const DEFAULTS = {
     theme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
-    thumbs: false, nsfw: false, stickied: false,
+    size: 'medium', font: 'sans', thumbs: false, nsfw: false, stickied: false,
     home: 'popular', mute: '', proxy: 'https://quiet-reddit-relay.damoursevan.workers.dev', favs: []
   };
   const settings = Object.assign({}, DEFAULTS, load('qr-settings'));
   function load(k) { try { return JSON.parse(localStorage.getItem(k)) || {}; } catch { return {}; } }
   function save() { try { localStorage.setItem('qr-settings', JSON.stringify(settings)); } catch {} }
-  function applyTheme() { document.documentElement.dataset.theme = settings.theme; }
+  function applyTheme() { const d = document.documentElement.dataset; d.theme = settings.theme; d.size = settings.size; d.font = settings.font; }
   applyTheme();
 
   // ---------- DOM helpers ----------
@@ -117,7 +117,16 @@
       }
       if (!ok.has(el.tagName)) { el.replaceWith(...el.childNodes); continue; }
       for (const a of [...el.attributes]) if (a.name !== 'href' || !/^https?:\/\//i.test(a.value)) el.removeAttribute(a.name);
-      if (el.tagName === 'A') { el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer nofollow'); }
+      if (el.tagName === 'A') {
+        el.setAttribute('target', '_blank'); el.setAttribute('rel', 'noopener noreferrer nofollow');
+        const href = el.getAttribute('href') || '';
+        // Bare pasted URLs are hard to read; shorten them to their kind + host.
+        if (el.textContent.trim() === href.trim() && href.length > 40) {
+          const host = (href.match(/^https?:\/\/([^/]+)/) || [])[1] || '';
+          const isImg = /\.(jpe?g|png|gif|webp)(\?|$)/i.test(href) || /(^|\.)(i\.redd\.it|preview\.redd\.it|i\.imgur\.com)$/.test(host);
+          el.textContent = isImg ? '[image ↗]' : `[${host} ↗]`;
+        }
+      }
     }
     return root.innerHTML;
   }
@@ -308,12 +317,16 @@
   const fields = { 'opt-thumbs': 'thumbs', 'opt-nsfw': 'nsfw', 'opt-stickied': 'stickied', 'opt-home': 'home', 'opt-mute': 'mute', 'opt-proxy': 'proxy' };
   $('#settingsBtn').addEventListener('click', () => {
     $('#opt-theme-dark').checked = settings.theme === 'dark';
+    (dlg.querySelector(`input[name=size][value=${settings.size}]`) || {}).checked = true;
+    (dlg.querySelector(`input[name=font][value=${settings.font}]`) || {}).checked = true;
     for (const [id, key] of Object.entries(fields)) { const el = $('#' + id); if (el.type === 'checkbox') el.checked = !!settings[key]; else el.value = settings[key]; }
     dlg.showModal();
   });
   $('#settingsClose').addEventListener('click', () => dlg.close());
   dlg.addEventListener('close', () => {
     settings.theme = $('#opt-theme-dark').checked ? 'dark' : 'light';
+    settings.size = dlg.querySelector('input[name=size]:checked')?.value || 'medium';
+    settings.font = dlg.querySelector('input[name=font]:checked')?.value || 'sans';
     for (const [id, key] of Object.entries(fields)) { const el = $('#' + id); settings[key] = el.type === 'checkbox' ? el.checked : el.value.trim(); }
     settings.home = settings.home.replace(/^\/?r\//, '') || 'popular';
     save(); applyTheme(); route();
