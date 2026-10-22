@@ -472,6 +472,7 @@
   function stopPlayback() {
     const v = $('#video');
     clearInterval(bufTimer); bufTimer = null;
+    clearTimeout(current?.retryTimer); if (current) current.retryTimer = null;
     v.onwaiting = v.onplay = v.onloadeddata = null;
     const bi = $('#bufInfo'); if (bi) bi.hidden = true;
     if (hls) { hls.destroy(); hls = null; }
@@ -511,22 +512,30 @@
     // Buffer cushion: hold playback until `cushion` seconds are stored, at the start and again after a
     // stall, instead of resuming on the first bytes and stalling again. Pausing keeps the buffer filling.
     const cushion = live ? Math.max(0, +settings.cushion || 0) : 0;
+    let target = cushion;                       // HLS lowers this to what the live window can supply
     let started = false, holding = false, holdStart = 0, ours = false;
+    let reconnects = 0, lastErrAt = 0, lastErr = '', reconnectTimer = null, lastAhead = 0, lastGrowth = Date.now();
     const hold = () => { holding = true; holdStart = Date.now(); clearTimeout(watchdog); ours = true; v.pause(); ours = false; };
     const release = () => { holding = false; showMsg(''); ours = true; v.play().catch(() => {}); ours = false; };
-    v.onplaying = () => { clearTimeout(watchdog); if (!holding) showMsg(''); };
+    v.onplaying = () => { clearTimeout(watchdog); if (!holding) showMsg(''); if (current && current.url === url) { current.started = true; current.playedSince = current.playedSince || Date.now(); } };
     v.onloadeddata = () => { if (cushion && !started) { started = true; hold(); } };
     v.onwaiting = () => { if (cushion && started && !holding && !v.paused) hold(); };
     v.onplay = () => { if (holding && !ours && !v.paused) holding = false; };   // the viewer pressed play during a hold: let them (autoplay's queued event arrives with the video still paused)
     bufTimer = setInterval(() => {
-      const ahead = aheadSecs(v);
-      const bi = $('#bufInfo'); if (bi) { bi.hidden = false; bi.textContent = `buffer ${Math.floor(ahead)} s`; bi.title = cushion ? `cushion target ${cushion} s; pausing keeps the buffer filling` : 'cushion off'; }
+      const ahead = aheadSecs(v), now = Date.now();
+      if (ahead > lastAhead + 0.1) lastGrowth = now;
+      lastAhead = ahead;
+      const bi = $('#bufInfo'); if (bi) { bi.hidden = false; bi.textContent = `buffer ${Math.floor(ahead)} s` + (reconnects ? ' · reconnecting' : ''); bi.title = cushion ? `cushion target ${target} s; pausing keeps the buffer filling` : 'cushion off'; }
+      // A stream that stopped delivering (connection still open, no data): treat as dropped.
+      if (started && ahead < 0.5 && now - lastGrowth > 20000 && (holding || v.readyState < 3)) { fail(url, 'no data arriving for 20 seconds'); return; }
+      // Reconnecting but the stored video ran out: give up on this attempt.
+      if (reconnects && ahead < 0.5 && now - lastErrAt > 8000) { fail(url, lastErr + ' (stored video ran out while reconnecting)'); return; }
       if (!cushion) return;
       if (!started && ahead > 0.5) { started = true; hold(); }
       if (holding) {
         if (!v.paused) { holding = false; showMsg(''); }   // something (the viewer) started it: stop holding
-        else if (ahead >= cushion || (Date.now() - holdStart) / 1000 > cushion + 15) release();
-        else showMsg(`building a ${cushion}-second cushion… ${Math.floor(ahead)} s stored`);
+        else if (ahead >= target || (now - holdStart) / 1000 > target + 15) release();
+        else showMsg(`building a ${target}-second cushion… ${Math.floor(ahead)} s stored`);
       }
     }, 500);
     const isHls = /\.m3u8(\?|$)/i.test(url), isTs = /\.ts(\?|$)/i.test(url);
@@ -548,6 +557,11 @@
       });
       let recovered = false;
       inst.loadSource(url); inst.attachMedia(v);
+      if (live && cushion) inst.on(Hls.Events.LEVEL_LOADED, (_, d) => {
+        // A live playlist only holds so many seconds; don't wait for more than it can supply.
+        if (d.details?.live && d.details.totalduration) target = Math.max(5, Math.min(cushion, Math.floor(d.details.totalduration - (d.details.targetduration || 0))));
+      });
+      inst.on(Hls.Events.FRAG_LOADED, () => { if (reconnects) { reconnects = 0; lastErr = ''; } });
       inst.on(Hls.Events.ERROR, (_, d) => {
         if (hls !== inst) return;
         const code = d.response?.code;
@@ -556,8 +570,17 @@
         const codec = /incompatiblecodecs|codec|buffercreate|bufferaddcodec/i.test(d.details);
         // One shot at recovering a non-codec media error (a bad segment, an audio switch) before giving up.
         if (d.type === Hls.ErrorTypes.MEDIA_ERROR && !codec && !recovered) { recovered = true; inst.recoverMediaError(); return; }
+        const why = d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '');
+        // Ride through: while stored video remains, keep playing and quietly retry the connection.
+        if (live && cushion && started && d.type !== Hls.ErrorTypes.MEDIA_ERROR && aheadSecs(v) > 1 && reconnects < 60) {
+          reconnects++; lastErrAt = Date.now(); lastErr = why;
+          if (reconnects === 1 || reconnects % 10 === 0) { current.log = current.log || []; current.log.push(`${maskUrl(url)} → ${why}; retrying while ${Math.floor(aheadSecs(v))} s is stored`); }
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => { if (hls === inst) inst.startLoad(); }, Math.min(10000, 2000 * reconnects));
+          return;
+        }
         // Defer: destroying hls.js from inside its own event handler breaks it.
-        setTimeout(() => fail(url, d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '')), 0);
+        setTimeout(() => fail(url, why), 0);
       });
     } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
       precount(url);
@@ -600,6 +623,18 @@
     current.log = current.log || [];
     current.log.push(`${maskUrl(url)} → ${why}`);
     const codecProblem = /bufferAddCodecError|bufferIncompatibleCodecs|bufferAppendError|media error 4|media error 3/.test(why);
+    // A live stream that was playing and then dropped: reconnect by itself, with growing pauses between tries.
+    if (current.sec === 'live' && current.started && !codecProblem) {
+      if (current.playedSince && Date.now() - current.playedSince > 60000) current.autoRetries = 0;   // a good run resets the count
+      current.autoRetries = (current.autoRetries || 0) + 1; current.playedSince = 0;
+      if (current.autoRetries <= 30) {
+        const delay = Math.min(20, 2 + current.autoRetries * 2);
+        const cancel = h('button', { type: 'button', onclick: () => { clearTimeout(current.retryTimer); current.started = false; current.autoRetries = 99; fail(url, why); } }, 'stop');
+        showMsg(`The stream dropped. Reconnecting in ${delay} s (attempt ${current.autoRetries})…`, current.log.slice(-3).join('\n'), h('div', { class: 'pbtns' }, cancel));
+        current.retryTimer = setTimeout(() => { if (current && current.url === url) { current.log = []; current.triedAlt = false; startLive(current.base, current.fmt); } }, delay * 1000);
+        return;
+      }
+    }
     if (current.sec === 'live' && !codecProblem && settings.format === 'auto' && !current.triedAlt) {
       current.triedAlt = true;
       const alt = current.fmt === 'm3u8' ? 'ts' : 'm3u8';
@@ -628,7 +663,7 @@
     const next = rotated.find(b => hostOf(b) !== hostOf(current.base)) || rotated[0];
     const buttons = h('div', { class: 'pbtns' },
       next && next !== current.base ? h('button', { type: 'button', onclick: () => { current.log = []; current.triedAlt = false; startLive(next, preferredFmt()); } }, `try ${next}`) : null,
-      h('button', { type: 'button', onclick: () => { current.log = []; current.triedAlt = false; if (current.sec === 'live') startLive(current.base, preferredFmt()); else playUrl(current.url); } }, 'retry'),
+      h('button', { type: 'button', onclick: () => { current.log = []; current.triedAlt = false; current.autoRetries = 0; if (current.sec === 'live') startLive(current.base, preferredFmt()); else playUrl(current.url); } }, 'retry'),
       h('button', { type: 'button', onclick: () => $('#pExt').click() }, 'open in VLC (.m3u)'));
     showMsg(hint, current.log.join('\n'), buttons);
   }
