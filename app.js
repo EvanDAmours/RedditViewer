@@ -243,32 +243,60 @@
   }
 
   function commentEl(d, op) {
-    const el = h('div', { class: 'comment', dataset: { id: d.id } });
+    const el = h('div', { class: 'comment', dataset: { id: d.id, level: Math.min(d.level, 6) } });
     const head = h('div', { class: 'chead' },
       h('span', { class: 'toggle' }, '▾'), ' ',
       h('span', { class: 'author' + (d.author === op.author ? ' op' : '') }, d.author),
-      ` · ${ago(d.created_utc)} · `,
-      h('a', { href: 'https://www.reddit.com' + d.permalink, target: '_blank', rel: 'noopener noreferrer', onclick: e => e.stopPropagation() }, 'context ↗'));
+      ` · ${ago(d.created_utc)}`,
+      d.children.length ? h('span', { class: 'count' }, ` · ${d.children.length} ${d.children.length === 1 ? 'reply' : 'replies'}`) : '',
+      ' · ', h('a', { href: 'https://www.reddit.com' + d.permalink, target: '_blank', rel: 'noopener noreferrer', onclick: e => e.stopPropagation() }, 'context ↗'));
     head.addEventListener('click', () => { el.classList.toggle('collapsed'); head.firstChild.textContent = el.classList.contains('collapsed') ? '▸' : '▾'; });
     el.append(head, h('div', { class: 'body md', html: sanitize(d.body_html) }));
+    if (d.children.length) el.append(h('div', { class: 'children' }, d.children.map(c => commentEl(c, op))));
     return el;
+  }
+
+  // Reddit's comment feed is flat but depth-first ordered, and honours ?depth=N.
+  // Fetching depth 1 and 2 alongside the full feed tells us each comment's level
+  // (3 = "three or deeper"); a stack walk then rebuilds the tree.
+  async function threadTree(sub, id, csort) {
+    const base = { sort: csort, limit: 500 };
+    const [full, d1, d2] = await Promise.all([
+      feed(`/r/${sub}/comments/${id}`, { ...base, depth: 10 }),
+      feed(`/r/${sub}/comments/${id}`, { ...base, depth: 1 }).catch(() => null),
+      feed(`/r/${sub}/comments/${id}`, { ...base, depth: 2 }).catch(() => null),
+    ]);
+    const post = full.find(x => x.kind === 't3');
+    const level = new Map();
+    if (d1 && d2) {
+      for (const c of d1) if (c.kind === 't1') level.set(c.name, 1);
+      for (const c of d2) if (c.kind === 't1' && !level.has(c.name)) level.set(c.name, 2);
+    }
+    const roots = [], stack = [];
+    for (const c of full) {
+      if (c.kind !== 't1') continue;
+      c.level = level.size ? (level.get(c.name) || 3) : 1;
+      c.children = [];
+      while (stack.length && stack.at(-1).level >= c.level) stack.pop();
+      (stack.length ? stack.at(-1).children : roots).push(c);
+      stack.push(c);
+    }
+    return { post, roots, nested: level.size > 0, total: full.filter(x => x.kind === 't1').length };
   }
 
   async function showThread(sub, id, csort) {
     app.replaceChildren(h('p', { class: 'notice' }, 'loading…'));
     try {
-      const things = await feed(`/r/${sub}/comments/${id}`, { sort: csort, limit: 200 });
-      const p = things.find(x => x.kind === 't3');
+      const { post: p, roots, nested, total } = await threadTree(sub, id, csort);
       if (!p) throw new Error('Post not found.');
-      const comments = things.filter(x => x.kind === 't1');
       document.title = `${p.title} · quiet reddit`;
       const sortSel = h('select', { onchange: e => { location.hash = `#/r/${sub}/comments/${id}/${e.target.value}`; } },
         ['confidence', 'top', 'new', 'controversial', 'old', 'qa'].map(s => h('option', { value: s, selected: s === (csort || 'confidence') }, s === 'confidence' ? 'best' : s)));
       app.replaceChildren(h('div', { class: 'thread' },
         h('a', { class: 'back', href: `#/r/${sub}` }, `← r/${sub}`),
         postEl(p, { full: true }),
-        h('div', { class: 'meta' }, 'sort comments: ', sortSel, ` · ${comments.length} shown, flat (Reddit's feed has no reply nesting)`),
-        h('div', { class: 'comments' }, comments.length ? comments.map(c => commentEl(c, p)) : h('p', { class: 'notice' }, 'no comments yet'))));
+        h('div', { class: 'meta' }, 'sort comments: ', sortSel, ` · ${total} comments` + (nested ? '' : ' (flat; could not fetch reply structure)')),
+        h('div', { class: 'comments' }, roots.length ? roots.map(c => commentEl(c, p)) : h('p', { class: 'notice' }, 'no comments yet'))));
     } catch (e) {
       app.replaceChildren(h('p', { class: 'notice error' }, e.message));
     }

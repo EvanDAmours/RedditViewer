@@ -36,8 +36,9 @@ forwards feeds and adds the CORS headers browsers need. The deployed relay is
 the app's default; you can point it at your own in ⚙ settings.
 
 What feeds give up compared to the JSON API: no vote counts, no comment
-counts, no NSFW/pinned flags, no reply nesting (comments show flat), and
-galleries/videos open on Reddit instead of inline.
+counts, no NSFW/pinned flags, and galleries/videos open on Reddit instead of inline.
+Reply nesting is rebuilt from depth-limited feeds, so levels one and two are
+exact and deeper replies are grouped under their level-two ancestor.
 
 To run your own relay: create a free Cloudflare account, edit `ALLOWED_ORIGINS`
 in `worker/worker.js` to your site's origin, then in `worker/` run

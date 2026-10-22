@@ -71,8 +71,14 @@ input,select{background:var(--card);border:1px solid var(--line);border-radius:6
 .thread .post{border-bottom:none;padding-top:4px}
 .thread .meta{color:var(--muted);font-size:.85em;padding:10px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .comments{margin-top:16px}
-.comment{padding:12px 0;border-bottom:1px solid var(--line)}.comment:last-child{border-bottom:none}
-.comment.collapsed > .body,.comment.collapsed > .children{display:none}
+.comment{padding:10px 0 2px}
+.comments>.comment{border-bottom:1px solid var(--line);padding-bottom:8px}
+.comments>.comment:last-child{border-bottom:none}
+.comment .children{margin:6px 0 0 6px;padding-left:14px;border-left:2px solid var(--line)}
+.comment[data-level="2"]>.children{border-left-color:#8fb4ea}
+.comment[data-level="3"]>.children{border-left-color:#9ccc9c}
+.comment.collapsed>.body,.comment.collapsed>.children{display:none}
+.comment.collapsed>.chead{opacity:.7}
 .comment .chead{font-size:.85em;color:var(--muted);cursor:pointer;user-select:none;margin-bottom:4px}
 .comment .chead .author{color:var(--fg);font-weight:600}
 .comment .chead .author.op{color:var(--accent)}
