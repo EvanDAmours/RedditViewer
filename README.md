@@ -45,6 +45,16 @@ in `worker/worker.js` to your site's origin, then in `worker/` run
 `npx wrangler login` and `npx wrangler deploy`. Paste the worker URL into
 ⚙ settings or into `DEFAULTS.proxy` in `app.js`.
 
+## Bonus: IPTV relay
+
+`worker/iptv-relay/` is a second Cloudflare Worker for browser IPTV players
+that let you set a CORS proxy. It forwards playlist, Xtream API and (if the
+player asks) stream requests to the provider, adds CORS headers, lets an
+https page reach `http://` providers, and rewrites HLS playlists so their
+segments also come through. It carries your provider login, so it is locked
+with a secret path segment: deploy it, run `npx wrangler secret put RELAY_KEY`,
+and set the player's proxy to `https://<worker>/<KEY>/?url={url}`.
+
 ## Development
 
 Three files: `index.html`, `style.css`, `app.js`. No dependencies.
