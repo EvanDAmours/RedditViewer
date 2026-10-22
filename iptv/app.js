@@ -20,7 +20,7 @@
   }
 
   // ---------- state ----------
-  const settings = Object.assign({ logos: true, format: 'auto', relay: '', relayStreams: false }, store.get('settings', {}));
+  const settings = Object.assign({ logos: true, format: 'auto', relay: '', relayStreams: false, cushion: 20 }, store.get('settings', {}));
   const saveSettings = () => store.set('settings', settings);
   let acct = store.get('account', null);   // { servers:[], username, password, base }
   let favs = store.get('favs', []);          // [{sec, id, name, ...}]
@@ -468,8 +468,12 @@
 
   // ---------- player ----------
   let hls = null, tsPlayer = null;
+  let bufTimer = null;
   function stopPlayback() {
     const v = $('#video');
+    clearInterval(bufTimer); bufTimer = null;
+    v.onwaiting = v.onplay = v.onloadeddata = null;
+    const bi = $('#bufInfo'); if (bi) bi.hidden = true;
     if (hls) { hls.destroy(); hls = null; }
     if (tsPlayer) { try { tsPlayer.pause(); tsPlayer.unload(); tsPlayer.detachMediaElement(); tsPlayer.destroy(); } catch {} tsPlayer = null; }
     v.pause(); v.removeAttribute('src'); v.load();
@@ -489,12 +493,42 @@
   };
   const CONNECT_LIMIT = 12000;
   let watchdog = null;
+  // Seconds of video stored ahead of the playhead (or, before playback starts, in the first stored range).
+  function aheadSecs(v) {
+    const b = v.buffered, t = v.currentTime; let nextStart = Infinity, ahead = 0;
+    for (let i = 0; i < b.length; i++) {
+      const st = b.start(i), en = b.end(i);
+      if (st - 0.5 <= t && t <= en) return Math.max(0, en - t);
+      if (st > t && st < nextStart) { nextStart = st; ahead = en - st; }
+    }
+    return ahead;
+  }
   function playUrl(url, { live, keepMsg } = {}) {
     stopPlayback(); if (!keepMsg) showMsg('connecting…');
     const v = $('#video');
     clearTimeout(watchdog);
     watchdog = setTimeout(() => { if (!$('#pMsg').hidden && /^(connecting|trying)/.test($('#pMsg').textContent)) fail(url, `no video after ${CONNECT_LIMIT / 1000} seconds`); }, CONNECT_LIMIT);
-    v.onplaying = () => { clearTimeout(watchdog); showMsg(''); };
+    // Buffer cushion: hold playback until `cushion` seconds are stored, at the start and again after a
+    // stall, instead of resuming on the first bytes and stalling again. Pausing keeps the buffer filling.
+    const cushion = live ? Math.max(0, +settings.cushion || 0) : 0;
+    let started = false, holding = false, holdStart = 0, ours = false;
+    const hold = () => { holding = true; holdStart = Date.now(); clearTimeout(watchdog); ours = true; v.pause(); ours = false; };
+    const release = () => { holding = false; showMsg(''); ours = true; v.play().catch(() => {}); ours = false; };
+    v.onplaying = () => { clearTimeout(watchdog); if (!holding) showMsg(''); };
+    v.onloadeddata = () => { if (cushion && !started) { started = true; hold(); } };
+    v.onwaiting = () => { if (cushion && started && !holding && !v.paused) hold(); };
+    v.onplay = () => { if (holding && !ours && !v.paused) holding = false; };   // the viewer pressed play during a hold: let them (autoplay's queued event arrives with the video still paused)
+    bufTimer = setInterval(() => {
+      const ahead = aheadSecs(v);
+      const bi = $('#bufInfo'); if (bi) { bi.hidden = false; bi.textContent = `buffer ${Math.floor(ahead)} s`; bi.title = cushion ? `cushion target ${cushion} s; pausing keeps the buffer filling` : 'cushion off'; }
+      if (!cushion) return;
+      if (!started && ahead > 0.5) { started = true; hold(); }
+      if (holding) {
+        if (!v.paused) { holding = false; showMsg(''); }   // something (the viewer) started it: stop holding
+        else if (ahead >= cushion || (Date.now() - holdStart) / 1000 > cushion + 15) release();
+        else showMsg(`building a ${cushion}-second cushion… ${Math.floor(ahead)} s stored`);
+      }
+    }, 500);
     const isHls = /\.m3u8(\?|$)/i.test(url), isTs = /\.ts(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
       // Safari plays HLS natively (HEVC and Dolby audio included); prefer that when available.
@@ -506,7 +540,9 @@
       }
       // Few retries on purpose: a refused stream should fail in seconds, not sit on "buffering".
       const inst = hls = new Hls({
-        enableWorker: true, lowLatencyMode: false, backBufferLength: live ? 30 : 90, maxBufferLength: 30,
+        enableWorker: true, lowLatencyMode: false, backBufferLength: live ? 30 : 90,
+        maxBufferLength: Math.max(30, cushion + 30), maxMaxBufferLength: 600, maxBufferSize: 120 * 1000 * 1000,
+        ...(live && cushion ? { liveSyncDuration: cushion, liveMaxLatencyDuration: cushion * 4 + 60 } : {}),
         liveDurationInfinity: true, manifestLoadingMaxRetry: 1, manifestLoadingTimeOut: 10000,
         levelLoadingMaxRetry: 1, levelLoadingTimeOut: 10000, fragLoadingMaxRetry: 1, fragLoadingTimeOut: 10000,
       });
@@ -525,7 +561,11 @@
       });
     } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
       precount(url);
-      tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: !!live, liveBufferLatencyMaxLatency: 6, liveBufferLatencyMinRemain: 1.5, autoCleanupSourceBuffer: true });
+      tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, {
+        enableWorker: false, lazyLoad: false, enableStashBuffer: true, stashInitialSize: 1024 * 1024,
+        liveBufferLatencyChasing: !!live && !cushion, liveBufferLatencyMaxLatency: 6, liveBufferLatencyMinRemain: 1.5,
+        autoCleanupSourceBuffer: true, autoCleanupMaxBackwardDuration: 60, autoCleanupMinBackwardDuration: 30,
+      });
       tsPlayer.attachMediaElement(v); tsPlayer.load(); tsPlayer.play().catch(() => {});
       tsPlayer.on(window.mpegts.Events.ERROR, (t, d, info) => setTimeout(() => fail(url, `${t}: ${d}${info?.code ? ` (HTTP ${info.code})` : ''}`), 0));
     } else if (isTs) {
@@ -694,6 +734,7 @@
   const dlg = $('#settings');
   $('#settingsBtn').addEventListener('click', () => {
     $('#optLogos').checked = settings.logos; $('#optFormat').value = settings.format;
+    $('#optCushion').value = String(settings.cushion ?? 20);
     $('#optRelay').value = settings.relay; $('#optRelayStreams').checked = settings.relayStreams;
     renderStats();
     const src = $('#srcInfo');
@@ -709,6 +750,7 @@
   });
   dlg.addEventListener('close', () => {
     settings.logos = $('#optLogos').checked; settings.format = $('#optFormat').value;
+    settings.cushion = +$('#optCushion').value || 0;
     settings.relay = $('#optRelay').value.trim(); settings.relayStreams = $('#optRelayStreams').checked;
     saveSettings(); renderStats(); if (!$('#main').hidden) renderList();
   });
