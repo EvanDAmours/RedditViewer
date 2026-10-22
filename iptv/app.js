@@ -30,10 +30,16 @@
   const favKey = () => (acct?.mode === 'm3u' ? 'favs-m3u' : 'favs');
 
   // ---------- network ----------
+  // Accepts the relay address however it was typed: with a {url} placeholder, ending in "?url=" or "=",
+  // or just the relay's base address (then "?url=" is added).
   function viaRelay(url) {
-    const p = (settings.relay || '').trim();
+    let p = (settings.relay || '').trim();
     if (!p) return null;
-    return p.includes('{url}') ? p.replace('{url}', encodeURIComponent(url)) : p + url;
+    if (p.includes('{url}')) return p.replace('{url}', encodeURIComponent(url));
+    if (/[=?]$/.test(p)) return p + encodeURIComponent(url);
+    if (!/\?/.test(p)) p = p.replace(/\/?$/, '/') + '?url=';
+    else p += '&url=';
+    return p + encodeURIComponent(url);
   }
   function normalizeServer(s) {
     s = String(s || '').trim(); if (!s) return '';
@@ -171,11 +177,12 @@
     let last;
     for (const u of tries) {
       if (u.startsWith('http:') && location.protocol === 'https:') { last = new Error('plain http link on an https page'); continue; }
+      const viaR = u === r;
       try {
         const res = await fetch(u, { credentials: 'omit', cache: 'no-store' });
-        if (!res.ok) { last = new Error('HTTP ' + res.status); continue; }
+        if (!res.ok) { last = new Error(viaR && (res.status === 403 || res.status === 404) ? `the relay refused (HTTP ${res.status}); check the relay URL, it must include your key` : (viaR ? 'relay: ' : '') + 'HTTP ' + res.status); continue; }
         return res;
-      } catch (e) { last = e; }
+      } catch (e) { last = new Error((viaR ? 'relay: ' : '') + (e.message === 'Load failed' || e.message === 'Failed to fetch' ? 'the browser could not complete the request' : e.message)); }
     }
     throw last || new Error('unreachable');
   }
