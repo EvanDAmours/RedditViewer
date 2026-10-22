@@ -55,7 +55,8 @@ input,select,textarea{background:var(--card);border:1px solid var(--line);border
 .video{position:relative;background:#000;border-radius:12px;overflow:hidden}
 video{width:100%;max-height:75vh;display:block;background:#000;aspect-ratio:16/9}
 .pmsg{position:absolute;inset:0;display:grid;place-items:center;background:rgba(0,0,0,.7);color:#fff;padding:20px;text-align:center}
-.pmsg div{max-width:480px}.pmsg .err{margin-top:10px}
+.pmsg>div{max-width:520px}.pmsg .err{margin-top:10px;white-space:pre-wrap;text-align:left;font-size:12.5px;overflow-wrap:anywhere}
+.pmsg .pbtns{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:14px}
 .epg{margin-top:14px;display:flex;flex-direction:column;gap:6px}
 .epg .prog{display:grid;grid-template-columns:110px 1fr;gap:10px;padding:8px 10px;border-radius:8px;background:var(--card);border:1px solid var(--line)}
 .epg .prog.now{border-color:var(--accent)}

@@ -220,16 +220,18 @@
     if (tsPlayer) { try { tsPlayer.pause(); tsPlayer.unload(); tsPlayer.detachMediaElement(); tsPlayer.destroy(); } catch {} tsPlayer = null; }
     v.pause(); v.removeAttribute('src'); v.load();
   }
-  function showMsg(text, err) {
+  function showMsg(text, err, extra) {
     const m = $('#pMsg'); m.hidden = !text;
-    m.replaceChildren(h('div', null, text, err ? h('div', { class: 'err' }, err) : null));
+    m.replaceChildren(h('div', null, text, err ? h('div', { class: 'err' }, err) : null, extra || null));
   }
+  const maskUrl = u => String(u).replace(/\/(live|movie|series)\/[^/]+\/[^/]+\//, '/$1/…/…/');
+  const CONNECT_LIMIT = 12000;
   let watchdog = null;
   function playUrl(url, { live, keepMsg } = {}) {
     stopPlayback(); if (!keepMsg) showMsg('connecting…');
     const v = $('#video');
     clearTimeout(watchdog);
-    watchdog = setTimeout(() => { if (!$('#pMsg').hidden && /^(connecting|trying)/.test($('#pMsg').textContent)) fail(url, 'no data after 20 seconds'); }, 20000);
+    watchdog = setTimeout(() => { if (!$('#pMsg').hidden && /^(connecting|trying)/.test($('#pMsg').textContent)) fail(url, `no video after ${CONNECT_LIMIT / 1000} seconds`); }, CONNECT_LIMIT);
     v.onplaying = () => { clearTimeout(watchdog); showMsg(''); };
     const isHls = /\.m3u8(\?|$)/i.test(url), isTs = /\.ts(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
@@ -239,9 +241,11 @@
         v.onerror = () => fail(url, v.error ? `media error ${v.error.code}` : 'cannot play');
         return;
       }
+      // Few retries on purpose: a refused stream should fail in seconds, not sit on "buffering".
       const inst = hls = new Hls({
         enableWorker: true, lowLatencyMode: false, backBufferLength: live ? 30 : 90, maxBufferLength: 30,
-        liveDurationInfinity: true, manifestLoadingMaxRetry: 1, manifestLoadingTimeOut: 15000, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 4,
+        liveDurationInfinity: true, manifestLoadingMaxRetry: 1, manifestLoadingTimeOut: 10000,
+        levelLoadingMaxRetry: 1, levelLoadingTimeOut: 10000, fragLoadingMaxRetry: 1, fragLoadingTimeOut: 10000,
       });
       let recovered = false;
       inst.loadSource(url); inst.attachMedia(v);
@@ -260,47 +264,60 @@
       tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: !!live, liveBufferLatencyMaxLatency: 6, liveBufferLatencyMinRemain: 1.5, autoCleanupSourceBuffer: true });
       tsPlayer.attachMediaElement(v); tsPlayer.load(); tsPlayer.play().catch(() => {});
       tsPlayer.on(window.mpegts.Events.ERROR, (t, d, info) => setTimeout(() => fail(url, `${t}: ${d}${info?.code ? ` (HTTP ${info.code})` : ''}`), 0));
+    } else if (isTs) {
+      setTimeout(() => fail(url, 'this browser cannot play MPEG-TS streams'), 0);
     } else {
       v.src = url; v.play().catch(() => {});
       v.onerror = () => fail(url, v.error ? `media error ${v.error.code}` : 'cannot play');
     }
   }
   let current = null;
+  function startLive(base, fmt) {
+    current.base = base; current.fmt = fmt;
+    current.url = streamUrl('live', current.id, fmt, base);
+    playUrl(current.url, { live: true });
+  }
+  // On failure: one more try with the other format on the same server, then stop and explain.
+  // Other servers are offered as a button, not cycled automatically, so a refused stream is
+  // reported within seconds instead of looking like endless buffering.
   function fail(url, why) {
     if (!current || url !== current.url) return; // stale error from a player we already replaced
     clearTimeout(watchdog);
     stopPlayback();
+    current.log = current.log || [];
+    current.log.push(`${maskUrl(url)} → ${why}`);
     const codecProblem = /bufferAddCodecError|bufferIncompatibleCodecs|bufferAppendError|media error 4|media error 3/.test(why);
-    // Try the same stream on the next server address, then the other format, before giving up
-    // (but not for codec errors: a different server sends the same video).
-    if (current?.sec === 'live' && !codecProblem) {
-      current.firstWhy = current.firstWhy || why;
-      const bases = streamBases();
-      current.baseIdx = (current.baseIdx ?? 0) + 1;
-      if (current.baseIdx < bases.length) {
-        current.url = streamUrl('live', current.id, current.fmt, bases[current.baseIdx]);
-        showMsg(`trying ${bases[current.baseIdx].replace(/^https?:\/\//, '')}…`);
-        return playUrl(current.url, { live: true, keepMsg: true });
-      }
-      if (settings.format === 'auto' && !current.triedAlt) {
-        current.triedAlt = true; current.baseIdx = 0;
-        current.fmt = current.fmt === 'm3u8' ? 'ts' : 'm3u8';
-        current.url = streamUrl('live', current.id, current.fmt, bases[0]);
-        return playUrl(current.url, { live: true });
-      }
+    if (current.sec === 'live' && !codecProblem && settings.format === 'auto' && !current.triedAlt) {
+      current.triedAlt = true;
+      const alt = current.fmt === 'm3u8' ? 'ts' : 'm3u8';
+      showMsg(`trying the .${alt} version…`);
+      current.url = streamUrl('live', current.id, alt, current.base); current.fmt = alt;
+      return playUrl(current.url, { live: true, keepMsg: true });
     }
-    if (current?.firstWhy && current.firstWhy !== why) why = `${current.firstWhy}; then ${why}`;
-    const offline = location.protocol === 'https:'
-      ? ' Many services send video from plain http:// addresses, which this https page is not allowed to load: download the offline copy from the sign-in page and open that instead.'
-      : '';
-    const hint = codecProblem
+    const all = current.log.join('\n');
+    const refused = /HTTP (4\d\d|5\d\d)/.test(all);
+    const hint = refused
+      ? 'The service answered but refused to send this stream. Sign-in works, so the account is fine; the service is declining video to this device or network (connection limit, or a block on this network).'
+      : codecProblem
       ? 'The stream arrived but this browser cannot decode its video or audio format, usually HEVC (H.265) video or Dolby (AC-3) audio. Chrome plays HEVC only on computers whose graphics chip supports it, with "Use graphics acceleration when available" switched on in Settings → System. Otherwise try Edge or Safari, an HD/SD version of the channel, or "⤓ .m3u" to open it in VLC.'
-      : /HTTP 5(11|03)|HTTP 4(01|03)/.test(why)
-      ? 'The service refused the stream. Usually: too many connections for this account, or it blocks this network/browser.'
-      : /networkError|Failed to fetch|network/i.test(why) && !settings.relayStreams
-        ? 'The stream could not be loaded. If sign-in works but video does not, the service is blocking browser requests for video: set a relay URL and enable "Send video through the relay" in settings.'
-        : 'Playback failed. Use "⤓ .m3u" to open it in VLC or another player.';
-    showMsg(hint + offline, why);
+      : /no video after/.test(why)
+      ? 'No video arrived in time. The request may be hanging on the way to the service, or the stream is very slow.'
+      : location.protocol === 'https:'
+      ? 'The stream could not be loaded. Many services send video from plain http:// addresses, which this https page is not allowed to load: use the offline copy from the sign-in page instead.'
+      : 'The stream could not be loaded.';
+    const bases = current.sec === 'live' ? streamBases() : [];
+    const hostOf = u => u.replace(/^https?:\/\//, '');
+    const i = bases.indexOf(current.base);
+    const rotated = [...bases.slice(i + 1), ...bases.slice(0, i)];
+    const next = rotated.find(b => hostOf(b) !== hostOf(current.base)) || rotated[0];
+    const buttons = h('div', { class: 'pbtns' },
+      next && next !== current.base ? h('button', { type: 'button', onclick: () => { current.log = []; current.triedAlt = false; startLive(next, preferredFmt()); } }, `try ${next}`) : null,
+      h('button', { type: 'button', onclick: () => { current.log = []; current.triedAlt = false; if (current.sec === 'live') startLive(current.base, preferredFmt()); else playUrl(current.url); } }, 'retry'),
+      h('button', { type: 'button', onclick: () => $('#pExt').click() }, 'open in VLC (.m3u)'));
+    showMsg(hint, current.log.join('\n'), buttons);
+  }
+  function preferredFmt() {
+    return settings.format === 'auto' ? (acct.info?.user_info?.allowed_output_formats?.includes('m3u8') ? 'm3u8' : 'ts') : settings.format;
   }
 
   async function open(sec, item) {
@@ -312,10 +329,8 @@
     $('#pFav').classList.toggle('on', isFav(sec, id));
     $('#pFav').onclick = () => { toggleFav(sec, { ...item, [SEC[sec].id]: id }); $('#pFav').classList.toggle('on', isFav(sec, id)); };
     if (sec === 'live') {
-      const fmt = settings.format === 'auto' ? (acct.info?.user_info?.allowed_output_formats?.includes('m3u8') ? 'm3u8' : 'ts') : settings.format;
-      current.id = id; current.fmt = fmt; current.baseIdx = 0;
-      current.url = streamUrl('live', id, fmt, streamBases()[0]);
-      playUrl(current.url, { live: true });
+      current.id = id;
+      startLive(streamBases()[0], preferredFmt());
       loadEpg(id);
     } else if (sec === 'vod') {
       const ext = item.container_extension || item.ext || 'mp4';
