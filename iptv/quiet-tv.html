@@ -155,8 +155,8 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
   </form>
 </dialog>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.17/hls.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.19/dist/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.8.2/dist/mpegts.min.js"></script>
 <script>
 /* Quiet TV — a browser player for Xtream Codes services. No build step, no server. */
 (() => {
@@ -393,16 +393,31 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
     v.onplaying = () => { clearTimeout(watchdog); showMsg(''); };
     const isHls = /\.m3u8(\?|$)/i.test(url), isTs = /\.ts(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode: false, liveSyncDurationCount: 3 });
-      hls.loadSource(url); hls.attachMedia(v);
-      hls.on(Hls.Events.ERROR, (_, d) => {
+      // Safari plays HLS natively (HEVC and Dolby audio included); prefer that when available.
+      if (v.canPlayType('application/vnd.apple.mpegurl') && /Safari/.test(navigator.userAgent) && !/Chrome|Chromium|Edg/.test(navigator.userAgent)) {
+        v.src = url; v.play().catch(() => {});
+        v.onerror = () => fail(url, v.error ? `media error ${v.error.code}` : 'cannot play');
+        return;
+      }
+      const inst = hls = new Hls({
+        enableWorker: true, lowLatencyMode: false, backBufferLength: live ? 30 : 90, maxBufferLength: 30,
+        liveDurationInfinity: true, manifestLoadingMaxRetry: 1, manifestLoadingTimeOut: 15000, levelLoadingMaxRetry: 3, fragLoadingMaxRetry: 4,
+      });
+      let recovered = false;
+      inst.loadSource(url); inst.attachMedia(v);
+      inst.on(Hls.Events.ERROR, (_, d) => {
+        if (hls !== inst) return;
         const code = d.response?.code;
         console.warn('hls', d.type, d.details, code || '', d.fatal ? 'fatal' : '');
+        if (!d.fatal && !(code && code >= 400)) return;
+        const codec = /incompatiblecodecs|codec|buffercreate|bufferaddcodec/i.test(d.details);
+        // One shot at recovering a non-codec media error (a bad segment, an audio switch) before giving up.
+        if (d.type === Hls.ErrorTypes.MEDIA_ERROR && !codec && !recovered) { recovered = true; inst.recoverMediaError(); return; }
         // Defer: destroying hls.js from inside its own event handler breaks it.
-        if (d.fatal || (code && code >= 400)) setTimeout(() => fail(url, d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '')), 0);
+        setTimeout(() => fail(url, d.type + ': ' + d.details + (code ? ` (HTTP ${code})` : '')), 0);
       });
     } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
-      tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: true, liveBufferLatencyChasing: true, lazyLoad: false });
+      tsPlayer = window.mpegts.createPlayer({ type: 'mpegts', isLive: !!live, url }, { enableWorker: false, lazyLoad: false, liveBufferLatencyChasing: !!live, liveBufferLatencyMaxLatency: 6, liveBufferLatencyMinRemain: 1.5, autoCleanupSourceBuffer: true });
       tsPlayer.attachMediaElement(v); tsPlayer.load(); tsPlayer.play().catch(() => {});
       tsPlayer.on(window.mpegts.Events.ERROR, (t, d, info) => setTimeout(() => fail(url, `${t}: ${d}${info?.code ? ` (HTTP ${info.code})` : ''}`), 0));
     } else {
@@ -439,7 +454,7 @@ dialog menu{margin:14px 0 0;padding:0;display:flex;justify-content:flex-end}
       ? ' Many services send video from plain http:// addresses, which this https page is not allowed to load: download the offline copy from the sign-in page and open that instead.'
       : '';
     const hint = codecProblem
-      ? 'The stream arrived but this browser cannot decode its video or audio format. 4K and some HD channels use HEVC/H.265 or AC3 audio, which Chrome and Firefox do not support. Try an HD or SD version of the channel, Safari or Edge, or use "⤓ .m3u" to open it in VLC.'
+      ? 'The stream arrived but this browser cannot decode its video or audio format, usually HEVC (H.265) video or Dolby (AC-3) audio. Chrome plays HEVC only on computers whose graphics chip supports it, with "Use graphics acceleration when available" switched on in Settings → System. Otherwise try Edge or Safari, an HD/SD version of the channel, or "⤓ .m3u" to open it in VLC.'
       : /HTTP 5(11|03)|HTTP 4(01|03)/.test(why)
       ? 'The service refused the stream. Usually: too many connections for this account, or it blocks this network/browser.'
       : /networkError|Failed to fetch|network/i.test(why) && !settings.relayStreams
