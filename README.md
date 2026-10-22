@@ -45,6 +45,16 @@ in `worker/worker.js` to your site's origin, then in `worker/` run
 `npx wrangler login` and `npx wrangler deploy`. Paste the worker URL into
 ⚙ settings or into `DEFAULTS.proxy` in `app.js`.
 
+## Quiet TV (IPTV player)
+
+`iptv/` is a separate single-page player for Xtream Codes services, served at
+`/iptv/` on the same Pages site. Sign in with your server address(es),
+username and password; it browses live TV (with now/next EPG), movies and
+series, keeps favourites, and plays HLS via hls.js, MPEG-TS via mpegts.js,
+and files via the browser's own player, with an "open in VLC" fallback.
+It talks to the provider directly over https when the provider supports it,
+and can use the IPTV relay below otherwise.
+
 ## Bonus: IPTV relay
 
 `worker/iptv-relay/` is a second Cloudflare Worker for browser IPTV players

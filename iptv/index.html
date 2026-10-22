@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="referrer" content="no-referrer">
+<title>Quiet TV</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='3' width='14' height='9' rx='2' fill='%234a8af4'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<section id="login" class="login" hidden>
+  <form id="loginForm" autocomplete="on">
+    <h1>Quiet TV</h1>
+    <p class="sub">Sign in to your Xtream Codes service.</p>
+    <label>Server address(es) <span class="hint">one per line; the first that answers is used</span>
+      <textarea id="inServers" rows="3" placeholder="http://example.com:8080" spellcheck="false"></textarea></label>
+    <label>Username <input id="inUser" autocomplete="username" spellcheck="false"></label>
+    <label>Password <input id="inPass" type="password" autocomplete="current-password"></label>
+    <details><summary>Advanced</summary>
+      <label>Relay URL <span class="hint">only if the service refuses browser requests</span>
+        <input id="inRelay" placeholder="https://relay.example/KEY/?url={url}" spellcheck="false"></label>
+    </details>
+    <p id="loginErr" class="err" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</section>
+
+<section id="main" class="main" hidden>
+  <header class="bar">
+    <nav class="tabs">
+      <button data-sec="live" class="on">Live</button>
+      <button data-sec="vod">Movies</button>
+      <button data-sec="series">Series</button>
+      <button data-sec="fav">★</button>
+    </nav>
+    <input id="search" type="search" placeholder="search…" spellcheck="false">
+    <button id="settingsBtn" title="settings">⚙</button>
+  </header>
+
+  <div class="layout">
+    <aside id="cats" class="cats"></aside>
+    <div id="list" class="list"></div>
+  </div>
+</section>
+
+<section id="player" class="player" hidden>
+  <div class="pbar">
+    <button id="pClose">← back</button>
+    <div class="ptitle"><b id="pName"></b><span id="pSub"></span></div>
+    <button id="pFav" title="favourite">☆</button>
+    <button id="pExt" title="open in another player">⤓ .m3u</button>
+  </div>
+  <div class="video"><video id="video" controls playsinline autoplay></video>
+    <div id="pMsg" class="pmsg" hidden></div></div>
+  <div id="epg" class="epg"></div>
+  <div id="episodes" class="episodes"></div>
+</section>
+
+<dialog id="settings">
+  <form method="dialog">
+    <h2>Settings</h2>
+    <label><input type="checkbox" id="optLogos"> Show channel logos</label>
+    <label>Live stream format
+      <select id="optFormat"><option value="auto">auto (HLS, then TS)</option><option value="m3u8">HLS (.m3u8)</option><option value="ts">MPEG-TS (.ts)</option></select></label>
+    <label>Relay URL <input id="optRelay" placeholder="https://relay.example/KEY/?url={url}" spellcheck="false"></label>
+    <label><input type="checkbox" id="optRelayStreams"> Send video through the relay too</label>
+    <p class="hint">Signed in as <span id="who"></span>. <button type="button" id="signOut" class="link">Sign out</button></p>
+    <menu><button value="close">close</button></menu>
+  </form>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.17/hls.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
