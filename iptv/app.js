@@ -475,6 +475,7 @@
     clearTimeout(current?.retryTimer); if (current) current.retryTimer = null;
     v.onwaiting = v.onplay = v.onloadeddata = null;
     const bi = $('#bufInfo'); if (bi) bi.hidden = true;
+    const si = $('#srvInfo'); if (si) si.hidden = true;
     if (hls) { hls.destroy(); hls = null; }
     if (tsPlayer) { try { tsPlayer.pause(); tsPlayer.unload(); tsPlayer.detachMediaElement(); tsPlayer.destroy(); } catch {} tsPlayer = null; }
     v.pause(); v.removeAttribute('src'); v.load();
@@ -517,7 +518,13 @@
     let reconnects = 0, lastErrAt = 0, lastErr = '', reconnectTimer = null, lastAhead = 0, lastGrowth = Date.now();
     const hold = () => { holding = true; holdStart = Date.now(); clearTimeout(watchdog); ours = true; v.pause(); ours = false; };
     const release = () => { holding = false; showMsg(''); ours = true; v.play().catch(() => {}); ours = false; };
-    v.onplaying = () => { clearTimeout(watchdog); if (!holding) showMsg(''); if (current && current.url === url) { current.started = true; current.playedSince = current.playedSince || Date.now(); } };
+    // Which server the video is really coming from (unwrapping the relay), shown once it plays.
+    const srv = $('#srvInfo'); if (srv) srv.hidden = true;
+    v.onplaying = () => {
+      clearTimeout(watchdog); if (!holding) showMsg('');
+      if (current && current.url === url) { current.started = true; current.playedSince = current.playedSince || Date.now(); }
+      if (srv) { const o = relayOrigin(); const viaR = o && url.startsWith(o + '/'); let real = url; if (viaR) { try { real = new URL(url).searchParams.get('url') || url; } catch {} } const host = (real.match(/^https?:\/\/([^/]+)/) || [])[1] || '?'; srv.hidden = false; srv.textContent = `${host}${viaR ? ' · via relay' : ''}`; srv.title = 'server the video is coming from' + (viaR ? ', fetched through the relay' : ', fetched directly'); }
+    };
     v.onloadeddata = () => { if (cushion && !started) { started = true; hold(); } };
     v.onwaiting = () => { if (cushion && started && !holding && !v.paused) hold(); };
     v.onplay = () => { if (holding && !ours && !v.paused) holding = false; };   // the viewer pressed play during a hold: let them (autoplay's queued event arrives with the video still paused)
