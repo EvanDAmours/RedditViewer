@@ -666,6 +666,24 @@
       h('button', { type: 'button', onclick: () => { current.log = []; current.triedAlt = false; current.autoRetries = 0; if (current.sec === 'live') startLive(current.base, preferredFmt()); else playUrl(current.url); } }, 'retry'),
       h('button', { type: 'button', onclick: () => $('#pExt').click() }, 'open in VLC (.m3u)'));
     showMsg(hint, current.log.join('\n'), buttons);
+    const o = relayOrigin();
+    if (refused && o && url.startsWith(o + '/')) {
+      relayProbe().then(ok => {
+        if (!current || current.url !== url) return;
+        const extra = ok === true ? ' The relay itself is working, so this refusal came from the TV service: it does not accept video requests arriving from the relay\'s network, and nothing in the player changes that.'
+          : ok === false ? ' The relay refused the request itself: the relay address or key in settings is wrong.' : '';
+        if (extra) showMsg(hint + extra, current.log.join('\n'), buttons);
+      });
+    }
+  }
+  // After a 403 through the relay: is the relay itself working? One small request to a neutral site.
+  let probeCache = { at: 0, ok: null };
+  async function relayProbe() {
+    const p = viaRelay('https://example.com/'); if (!p) return null;
+    if (Date.now() - probeCache.at < 60000) return probeCache.ok;
+    try { const r = await fetch(p, { method: 'HEAD', credentials: 'omit', cache: 'no-store' }); probeCache = { at: Date.now(), ok: !(r.status === 403 || r.status === 401) }; }
+    catch { probeCache = { at: Date.now(), ok: null }; }
+    return probeCache.ok;
   }
   function preferredFmt() {
     if (settings.format !== 'auto') return settings.format;
